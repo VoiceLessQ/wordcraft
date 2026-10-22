@@ -3361,11 +3361,26 @@ fn hostile_params_never_panic() {
         for j in &junk {
             let mut s = Session::new(crate::sample::sample_document());
             assert_ne!(s.read_aloud.backend, crate::speech::Backend::System, "tests must never start real speech");
-            let _ = s.run(spec.id, j);
+            let r = s.run(spec.id, j);
+            assert!(!caught_panic(&r), "{} panicked on {j}: {r:?}", spec.id);
             s.clamp_selection();
             let _ = s.layout();
         }
     }
+}
+
+/// A command panic that `Session::run`'s guard turned into an error: still a crash path (#3718).
+fn caught_panic(r: &Result<serde_json::Value, crate::CmdError>) -> bool {
+    matches!(r, Err(crate::CmdError::Failed(m)) if m.contains(" panicked: "))
+}
+
+#[test]
+fn caught_panic_flags_a_command_that_panics() {
+    let mut s = Session::new(crate::sample::sample_document());
+    let boom = crate::CommandSpec::new("test.boom", "Boom", "", |_, _| panic!("boom")).pure();
+    s.registry = std::sync::Arc::new(crate::Registry::new(vec![boom]));
+    assert!(caught_panic(&s.run("test.boom", &json!({}))));
+    assert!(!caught_panic(&Err(crate::CmdError::Failed("no picture".into()))));
 }
 
 #[test]
