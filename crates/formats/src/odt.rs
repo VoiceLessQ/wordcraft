@@ -1692,6 +1692,11 @@ struct Body<'a> {
     track: Option<bool>,
     /// Changed regions read, by id.
     regions: HashMap<String, Region>,
+    /// Every changed region, read before the body by [`read_regions`]: a change mark inside
+    /// deleted content may name a region listed after the deletion's.
+    all_regions: HashMap<String, Region>,
+    /// Read only the changed regions, without deleted content (for [`read_regions`]).
+    regions_only: bool,
     /// Regions seen (capped at [`MAX_REGIONS`]).
     region_count: usize,
     /// The region being read.
@@ -1737,6 +1742,8 @@ impl<'a> Body<'a> {
             in_tc: false,
             track: None,
             regions: HashMap::new(),
+            all_regions: HashMap::new(),
+            regions_only: false,
             region_count: 0,
             region: None,
             info_at: None,
@@ -1956,13 +1963,21 @@ impl Body<'_> {
             };
         }
         if matches!(p.kind, Kind::Code | Kind::Heading(_) | Kind::Title) {
+            let code = p.kind == Kind::Code;
+            let plain = |f: &mut Fmt| {
+                if code {
+                    f.code = false;
+                    f.font = None;
+                }
+                f.size = None;
+            };
             for i in &mut p.inlines {
                 if let Inline::Text(_, f) = i {
-                    if p.kind == Kind::Code {
-                        f.code = false;
-                        f.font = None;
+                    plain(f);
+                    // An opened format change keeps the current formatting as its old one.
+                    if let Some(c) = f.fmt_change.as_deref_mut() {
+                        plain(&mut c.old);
                     }
-                    f.size = None;
                 }
             }
         }
@@ -2079,11 +2094,11 @@ impl Body<'_> {
             }
             // Inside deleted content: insertions and format changes over paragraph marks nest.
             if matches!(local(q), "change-start" | "change-end") {
-                let regions = &self.regions;
+                let regions = [&self.regions, &self.all_regions];
                 let start = local(q) == "change-start";
                 if let Some(d) = &mut self.del {
-                    change_mark(regions, &mut d.ins, RevisionKind::Insert, start, a);
-                    change_mark(regions, &mut d.fmt_changes, RevisionKind::Format, start, a);
+                    change_mark(&regions, &mut d.ins, RevisionKind::Insert, start, a);
+                    change_mark(&regions, &mut d.fmt_changes, RevisionKind::Format, start, a);
                 }
                 return;
             }
@@ -2095,6 +2110,10 @@ impl Body<'_> {
                 self.info_at = Some(self.depth);
                 return;
             }
+        }
+        if self.regions_only && local(q) != "tracked-changes" {
+            self.skip = 1;
+            return;
         }
         match local(q) {
             "tracked-changes" => {
@@ -2116,8 +2135,8 @@ impl Body<'_> {
             }
             "change-start" | "change-end" => {
                 let start = local(q) == "change-start";
-                change_mark(&self.regions, &mut self.active_ins, RevisionKind::Insert, start, a);
-                change_mark(&self.regions, &mut self.active_fmt, RevisionKind::Format, start, a);
+                change_mark(&[&self.regions], &mut self.active_ins, RevisionKind::Insert, start, a);
+                change_mark(&[&self.regions], &mut self.active_fmt, RevisionKind::Format, start, a);
             }
             "note"
             | "annotation"
@@ -2310,7 +2329,7 @@ impl Body<'_> {
                 if let Some((_, r)) = &mut self.region {
                     r.kind = Some(kind);
                 }
-                if kind == RevisionKind::Delete {
+                if kind == RevisionKind::Delete && !self.regions_only {
                     self.containers.push(Vec::new());
                     self.del = Some(DelState {
                         containers: self.containers.len(),
@@ -2557,10 +2576,20 @@ impl Body<'_> {
     }
 }
 
+/// The changed regions in `xml` (a `content.xml`) without their deleted content, read before
+/// the body: see [`Body::all_regions`].
+fn read_regions(styles: &Styles, pages: &Pages, xml: &[u8]) -> HashMap<String, Region> {
+    let mut no_files = |_: &str| -> Option<Vec<u8>> { None };
+    let mut b = Body::new(styles, pages, &mut no_files);
+    b.regions_only = true;
+    events(xml, |ev| b.feed(ev));
+    b.regions
+}
+
 /// A `text:change-start` (`start`) or `text:change-end` (attributes `a`) among the open changes
-/// of `kind` in `open`: unknown ids, other kinds, ends without a start and starts past
-/// [`MAX_OPEN_INSERTIONS`] are ignored.
-fn change_mark(regions: &HashMap<String, Region>, open: &mut Vec<(String, RevMark)>, kind: RevisionKind, start: bool, a: &Attrs) {
+/// of `kind` in `open`, its region looked up in `regions` in turn: unknown ids, other kinds,
+/// ends without a start and starts past [`MAX_OPEN_INSERTIONS`] are ignored.
+fn change_mark(regions: &[&HashMap<String, Region>], open: &mut Vec<(String, RevMark)>, kind: RevisionKind, start: bool, a: &Attrs) {
     let Some(id) = get(a, "text:change-id") else { return };
     if !start {
         if let Some(k) = open.iter().position(|(o, _)| o == id) {
@@ -2568,7 +2597,7 @@ fn change_mark(regions: &HashMap<String, Region>, open: &mut Vec<(String, RevMar
         }
         return;
     }
-    if let Some(r) = regions.get(id).filter(|r| r.kind == Some(kind))
+    if let Some(r) = regions.iter().find_map(|m| m.get(id)).filter(|r| r.kind == Some(kind))
         && open.len() < MAX_OPEN_INSERTIONS
         && !open.iter().any(|(o, _)| o == id)
     {
@@ -2693,6 +2722,11 @@ fn parse_tracked(bytes: &[u8]) -> Result<(Flow, SectionProps, Option<bool>, Opti
     };
     let parts = styles_xml.as_deref().map(|x| page_parts::read(x, &styles, &mut pages, &mut fetch)).unwrap_or_default();
     let mut body = Body::new(&styles, &pages, &mut fetch);
+    // Only a document with tracked changes has regions to read first.
+    let tc: &[u8] = b"tracked-changes";
+    if content.windows(tc.len()).any(|w| w == tc) {
+        body.all_regions = read_regions(&styles, &pages, &content);
+    }
     events(&content, |ev| body.feed(ev));
     let mut blocks = body.take_blocks();
     // An open section with nothing in it (after a column section at the end) isn't one: the
@@ -3723,6 +3757,24 @@ mod tests {
     }
 
     #[test]
+    fn a_format_change_on_heading_text_keeps_its_formatting() {
+        // A heading's text size comes from its style, so a span's size is dropped: from the
+        // opened change's old formatting too, or Reject would bring it back.
+        let regions = region("f1", "format-change", "Carol", "2024-04-05T09:15:00", "");
+        let ns = format!(
+            r#"{NS_TC} xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0""#
+        );
+        let content = format!(
+            r#"<office:document-content {ns}><office:automatic-styles><style:style style:name="T1" style:family="text"><style:text-properties fo:font-size="20pt" fo:font-weight="bold"/></style:style></office:automatic-styles><office:body><office:text><text:tracked-changes>{regions}</text:tracked-changes><text:h text:outline-level="1"><text:change-start text:change-id="f1"/><text:span text:style-name="T1">Title</text:span><text:change-end text:change-id="f1"/></text:h></office:text></office:body></office:document-content>"#
+        );
+        let doc = import(&package(&content, None)).unwrap();
+        let Some(wordcraft_doc::Block::Para(p)) = doc.body.first().map(|b| &**b) else { panic!("a paragraph") };
+        let (_, cp) = p.run_ranges().next().unwrap();
+        assert_eq!((cp.size, cp.bold), (None, Some(true)), "the heading style's size, the span's bold");
+        assert_eq!(cp.fmt_change.as_deref().map(|c| c.old.clone()), Some(cp.formatting()));
+    }
+
+    #[test]
     fn format_changes_round_trip_through_export() {
         use wordcraft_doc::props::{CharProps, ParaProps, PropChange};
         let mut d = Document::new();
@@ -3931,6 +3983,32 @@ mod tests {
         let mut out = Vec::new();
         walk(&doc.body, &mut out);
         out
+    }
+
+    #[test]
+    fn marks_in_deleted_text_may_name_regions_listed_later() {
+        // Bob deleted "old", a paragraph break whose formatting Carl had changed, and "new",
+        // which Alice had inserted. Only the order of the regions differs.
+        let deletion = region(
+            "d1",
+            "deletion",
+            "Bob",
+            "2024-03-02T11:30:00",
+            r#"<text:p>old<text:change-start text:change-id="f1"/></text:p><text:p><text:change-end text:change-id="f1"/><text:change-start text:change-id="i1"/>new<text:change-end text:change-id="i1"/></text:p>"#,
+        );
+        let others =
+            region("i1", "insertion", "Alice", "2024-03-01T10:00:00", "") + &region("f1", "format-change", "Carl", "2024-03-01T12:00:00", "");
+        let read = |regions: &str| import(&tracked(regions, r#"<text:p>Keep <text:change text:change-id="d1"/>end.</text:p>"#)).unwrap();
+        let s = |v: &str| v.to_string();
+        let later = read(&(deletion.clone() + &others));
+        assert_eq!(para_changes(&later), vec![(s("Keep old"), Some((s("Carl"), true))), (s("newend."), None)]);
+        let want = vec![
+            (vec![(s("Keep "), false, false), (s("old"), false, true)], (false, true)),
+            (vec![(s("new"), true, true), (s("end."), false, false)], (false, false)),
+        ];
+        assert_eq!(marks(&later), want);
+        let first = read(&(others + &deletion));
+        assert_eq!((para_changes(&first), marks(&first)), (para_changes(&later), want));
     }
 
     #[test]
