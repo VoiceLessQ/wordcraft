@@ -1833,6 +1833,44 @@ fn tables_nest_only_as_deep_as_a_json_save_reads() {
     assert!(blocks.iter().any(|b| b.as_para().is_some_and(|p| p.text.contains('b'))), "the pasted text is there");
 }
 
+/// #3618: a text box story sits two JSON levels below the body, and its deepest cell still reads
+/// back from a `.json` save with the richest content measured pasted in: a gradient shape, and
+/// gradient text effects changed with Track Changes on (the change keeps the old effects too).
+#[test]
+fn the_deepest_cell_of_a_text_box_reads_back_with_rich_content() {
+    use wordcraft_doc::table::MAX_TABLE_DEPTH;
+    let mut s = s();
+    run(&mut s, "insert.shape", json!({"kind": "rectangle"}));
+    run(&mut s, "shape.fill", json!({"gradient": {"stops": [{"pos": 0, "color": "FF0000"}, {"pos": 100, "color": "0000FF"}]}}));
+    run(&mut s, "select.collapse", json!({"end": true}));
+    run(&mut s, "text.insert", json!({"text": "word"}));
+    run(&mut s, "select.text", json!({"text": "word"}));
+    run(&mut s, "format.textEffects", json!({"fill": {"gradient": ["FF0000", "0000FF"]}, "shadow": {"color": "FF0000"}}));
+    run(&mut s, "review.trackChanges", json!({"on": true}));
+    run(&mut s, "format.textEffects", json!({"fill": {"gradient": ["00FF00", "0000FF"]}, "glow": {"color": "00FF00"}}));
+    run(&mut s, "review.trackChanges", json!({"on": false}));
+    run(&mut s, "select.all", json!({}));
+    run(&mut s, "edit.copy", json!({}));
+    run(&mut s, "select.collapse", json!({"end": true}));
+    run(&mut s, "insert.textBox", json!({"text": "in box"}));
+    for _ in 0..MAX_TABLE_DEPTH {
+        run(&mut s, "insert.table", json!({"rows": 1, "cols": 1}));
+    }
+    assert_ne!(s.sel.focus.story, StoryRef::Body);
+    assert_eq!(s.sel.focus.path.depth(), MAX_TABLE_DEPTH);
+    run(&mut s, "edit.paste", json!({}));
+    // Commands don't reach this deep (the paragraph walk stops at 16), so check the paste did.
+    let para = s.doc.block(s.sel.focus.story, &s.sel.focus.path).and_then(|b| b.as_para()).unwrap();
+    let gradient = |f: &Option<wordcraft_doc::fill::Fill>| matches!(f, Some(wordcraft_doc::fill::Fill::Gradient(_)));
+    assert!(para.objects.iter().any(|o| matches!(o, wordcraft_doc::InlineObject::Shape { fill, .. } if gradient(fill))), "{para:?}");
+    assert!(
+        para.runs.iter().any(|r| r.props.text_effects.is_some() && r.props.fmt_change.as_ref().is_some_and(|c| c.old.text_effects.is_some())),
+        "{para:?}"
+    );
+    let saved = crate::io::save_bytes("deep.json", &s.doc).unwrap();
+    assert_eq!(crate::io::open_bytes("deep.json", &saved).map(|d| d == s.doc), Ok(true));
+}
+
 /// AutoFit Contents (#44) measures the text: a column of short words narrows, a column with a
 /// long sentence widens (wrapping within the page), and the widths are written to the grid.
 #[test]
