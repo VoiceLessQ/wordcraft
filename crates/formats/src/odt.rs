@@ -1693,7 +1693,7 @@ struct Body<'a> {
     /// Changed regions read, by id.
     regions: HashMap<String, Region>,
     /// Every changed region, read before the body by [`read_regions`]: a change mark inside
-    /// deleted content may name a region listed after the deletion's.
+    /// deleted content may name a region listed after the deletion's own region.
     all_regions: HashMap<String, Region>,
     /// Read only the changed regions, without deleted content (for [`read_regions`]).
     regions_only: bool,
