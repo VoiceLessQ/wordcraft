@@ -40,6 +40,8 @@ const MAX_REGIONS: usize = 10_000;
 const MAX_OPEN_INSERTIONS: usize = 64;
 /// Longest change author or date kept, in characters.
 const MAX_INFO_CHARS: usize = 256;
+/// Most spaces the document's `text:s` elements add beyond the one each stands for (hostile input).
+const MAX_EXTRA_SPACES: usize = 4 << 20;
 
 mod page_parts;
 
@@ -1604,6 +1606,8 @@ struct Body<'a> {
     para: Option<Para>,
     /// The text read last ended in a space collapsed from XML whitespace (not a `text:s`).
     xml_space_end: bool,
+    /// What is left of [`MAX_EXTRA_SPACES`].
+    spaces_left: usize,
     para_cont: bool,
     /// Open lists: (style name, item open, item used).
     lists: Vec<(Option<String>, bool)>,
@@ -1657,6 +1661,7 @@ impl<'a> Body<'a> {
             fmt: Vec::new(),
             para: None,
             xml_space_end: false,
+            spaces_left: MAX_EXTRA_SPACES,
             para_cont: false,
             lists: Vec::new(),
             lists_saved: Vec::new(),
@@ -2061,7 +2066,9 @@ impl Body<'_> {
             }
             "s" => {
                 let n = get(a, "text:c").and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, 1000);
-                self.push_text(&" ".repeat(n));
+                let extra = n.saturating_sub(1).min(self.spaces_left);
+                self.spaces_left -= extra;
+                self.push_text(&" ".repeat(1 + extra));
             }
             "tab" => self.push_text("\t"),
             "line-break" => self.push_text("\n"),
@@ -3771,6 +3778,22 @@ mod tests {
             let back = import(&export(&d).unwrap()).unwrap();
             assert_eq!(back.plain_text(wordcraft_doc::StoryRef::Body).trim_end_matches('\n'), t);
         }
+    }
+
+    #[test]
+    fn text_s_spaces_have_a_budget_for_the_whole_document() {
+        // 5,000 elements asking for 1,000 spaces each would add 5 million (#3700).
+        let tags = 5_000;
+        let run = r#"<text:s text:c="1000"/>"#.repeat(tags);
+        let content = format!(
+            r#"<office:document-content {NS_T}><office:body><office:text><text:p>a{run}b</text:p><text:p>c<text:s text:c="3"/>d</text:p></office:text></office:body></office:document-content>"#
+        );
+        let f = parse(&package(&content, None)).unwrap();
+        let texts: Vec<String> = paras(&f).iter().map(|p| p.text()).collect();
+        // Once the budget is spent, each element still stands for one space.
+        assert_eq!(texts[0].len(), 2 + tags + MAX_EXTRA_SPACES);
+        assert!(texts[0].starts_with("a ") && texts[0].ends_with(" b"));
+        assert_eq!(texts[1], "c d");
     }
 
     #[test]
