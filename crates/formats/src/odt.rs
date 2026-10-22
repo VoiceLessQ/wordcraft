@@ -2064,7 +2064,8 @@ impl Body<'_> {
                 }
                 self.fmt.push(f);
             }
-            "s" => {
+            // Outside a paragraph `push_text` drops spaces, so they cost no budget.
+            "s" if self.para.is_some() => {
                 let n = get(a, "text:c").and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, 1000);
                 let extra = n.saturating_sub(1).min(self.spaces_left);
                 self.spaces_left -= extra;
@@ -3818,6 +3819,18 @@ mod tests {
         assert_eq!(texts[0].len(), 2 + tags + MAX_EXTRA_SPACES);
         assert!(texts[0].starts_with("a ") && texts[0].ends_with(" b"));
         assert_eq!(texts[1], "c d");
+    }
+
+    #[test]
+    fn text_s_outside_a_paragraph_spends_no_budget() {
+        // Spaces outside a paragraph are dropped, so they mustn't use up the budget (#3700).
+        let stray = r#"<text:s text:c="1000"/>"#.repeat(5_000);
+        let content = format!(
+            r#"<office:document-content {NS_T}><office:body><office:text>{stray}<text:p>a<text:s text:c="1000"/>b</text:p></office:text></office:body></office:document-content>"#
+        );
+        let f = parse(&package(&content, None)).unwrap();
+        let texts: Vec<String> = paras(&f).iter().map(|p| p.text()).collect();
+        assert_eq!(texts, vec![format!("a{}b", " ".repeat(1000))]);
     }
 
     #[test]
