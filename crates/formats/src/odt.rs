@@ -2592,8 +2592,11 @@ fn parse_tracked(bytes: &[u8]) -> Result<(Flow, SectionProps, Option<bool>, Opti
         // A frame may point at any entry, as often as it likes: `Pictures` keeps that bounded.
         pictures.get(&mut z, path)
     };
-    let parts = styles_xml.as_deref().map(|x| page_parts::read(x, &styles, &mut pages, &mut fetch)).unwrap_or_default();
+    // One `text:s` budget for the headers and footers and then the body.
+    let mut spaces_left = MAX_EXTRA_SPACES;
+    let parts = styles_xml.as_deref().map(|x| page_parts::read(x, &styles, &mut pages, &mut fetch, &mut spaces_left)).unwrap_or_default();
     let mut body = Body::new(&styles, &pages, &mut fetch);
+    body.spaces_left = spaces_left;
     events(&content, |ev| body.feed(ev));
     let mut blocks = body.take_blocks();
     // An open section with nothing in it (after a column section at the end) isn't one: the
@@ -3216,6 +3219,27 @@ mod tests {
         let d = import(&package(&content, Some(&styles))).unwrap();
         assert!(d.last_section.headers.default.is_some());
         assert_eq!(part_text(&d, d.last_section.footers.default), "After");
+    }
+
+    #[test]
+    fn headers_and_footers_share_the_text_s_budget_with_the_body() {
+        // Each header and footer was read with a budget of its own (#3700).
+        let run = r#"<text:s text:c="1000"/>"#.repeat(3_000);
+        let styles = format!(
+            r#"<office:document-styles {NS_T}><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="21cm" fo:page-height="29.7cm"/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"><style:header><text:p>h{run}</text:p></style:header><style:footer><text:p>f{run}</text:p></style:footer></style:master-page></office:master-styles></office:document-styles>"#
+        );
+        let content = format!(
+            r#"<office:document-content {NS_T}><office:body><office:text><text:p>b{run}</text:p></office:text></office:body></office:document-content>"#
+        );
+        let d = import(&package(&content, Some(&styles))).unwrap();
+        let texts = [
+            part_text(&d, d.last_section.headers.default),
+            part_text(&d, d.last_section.footers.default),
+            d.plain_text(wordcraft_doc::StoryRef::Body),
+        ];
+        // One space per element in all three, and one budget of extra spaces between them.
+        assert_eq!(texts.iter().map(|t| t.matches(' ').count()).sum::<usize>(), 3 * 3_000 + MAX_EXTRA_SPACES);
+        assert!(texts[0].starts_with("h ") && texts[1].starts_with("f ") && texts[2].starts_with("b "));
     }
 
     #[test]
