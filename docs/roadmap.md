@@ -74,7 +74,7 @@ languages, screen-reader access, ecosystem decisions (VBA, add-ins, cloud), an i
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-22 | trivial | Current focus item 1: 680 open PRs on 2026-10-22, 453 conflicting; of the PRs it named, all but Hebrew #20 are merged or closed. M14: releases v0.1.0 to v0.9.0 |
+| 2026-10-22 | trivial | Current focus item 1: 680 open PRs on 2026-10-22, 453 conflicting; of the PRs the old item named (#264, #267, #270, #20, #155 to #164), all but Hebrew #20 are merged or closed. M14: releases v0.1.0 to v0.9.0 |
 | 2026-10-18 | trivial | M6: Manage Sources imports Word's `Sources.xml` (#2640) |
 | 2026-10-12 | minor | Czech proofing review: short-word splits rank after deletion, NOSUGGEST excludes suggestions while accepting typed forms, affix comments apply only to headers, ratios keep spaces and repeated-word messages use Czech quotes; synthetic engine end-to-end and latency checks |
 | 2026-10-12 | minor | Czech spelling from the installed Hunspell dictionary, runtime-table suggestions and generic checks; Czech interface writes cs-CZ documents; no Czech hyphenation patterns bundled; estimates unchanged |
