@@ -17,7 +17,8 @@
 //! `ins`/`del` marks of runs and paragraph marks; a deleted paragraph mark is a region of
 //! several paragraphs. A format change (§5.5.6) records who changed the formatting and when, not
 //! the formatting before: text in its range opens with a formatting revision whose old formatting
-//! is the current one, and export writes character and paragraph formatting changes as ranges.
+//! is the current one, and so does a paragraph whose mark is in it (as with an inserted mark).
+//! Export writes character changes as ranges over their text and paragraph changes over the mark.
 
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
@@ -115,6 +116,8 @@ struct Writer {
     regions: Vec<String>,
     /// The insertion open in the body, and its region id.
     open_ins: Option<(RevMark, String)>,
+    /// The format change over the last paragraph's mark, open until the next paragraph begins.
+    open_fmt: Option<(RevMark, String)>,
     /// Style of the paragraph being written.
     cur_style: String,
     /// Styles of the paragraphs joined into the one being written (deleted paragraph marks),
@@ -269,8 +272,17 @@ impl Writer {
         self.open_ins = st;
     }
 
+    /// Close the insertion open in the body, and a format change left open over a paragraph mark.
     fn close_ins(&mut self, out: &mut String) {
         ins_close(&mut self.open_ins, out);
+        ins_close(&mut self.open_fmt, out);
+    }
+
+    /// Start a format change by `m` in `out`; its region id.
+    fn fmt_start(&mut self, m: &RevMark, out: &mut String) -> String {
+        let ct = self.region("format-change", m, "");
+        out.push_str(&format!("<text:change-start text:change-id=\"{ct}\"/>"));
+        ct
     }
 
     /// Inlines with their insertions as change ranges kept in `st`.
@@ -298,6 +310,7 @@ impl Writer {
     fn deletion(&mut self, seg: &[Item<'_>], m: &RevMark, out: &mut String) {
         let mut body = String::new();
         let mut st: Option<(RevMark, String)> = None;
+        let mut fmt: Option<(RevMark, String)> = None;
         let mut start = 0;
         let mut first = true;
         loop {
@@ -308,11 +321,18 @@ impl Writer {
             first = false;
             let style = self.chain.get(self.part).cloned().unwrap_or_else(|| self.cur_style.clone());
             body.push_str(&format!("<text:p text:style-name=\"{style}\">"));
+            ins_close(&mut fmt, &mut body);
             self.ins_inlines(seg.get(start..end.unwrap_or(seg.len())).unwrap_or(&[]), &mut st, &mut body);
             // A deleted paragraph mark that had been inserted: the range runs on past it.
             match end.and_then(|e| seg.get(e)).and_then(|i| i.marks().0) {
                 Some(ins) => self.ins_open(&mut st, ins, &mut body),
                 None => ins_close(&mut st, &mut body),
+            }
+            // One whose paragraph formatting changed: a format change over it, as in `para_in`.
+            if let Some(Item::Mark(q)) = end.and_then(|e| seg.get(e))
+                && let Some(c) = q.fmt_change.as_deref()
+            {
+                fmt = Some((c.mark.clone(), self.fmt_start(&c.mark, &mut body)));
             }
             body.push_str("</text:p>");
             match end {
@@ -360,8 +380,7 @@ impl Writer {
             let seg = inl.get(k..j).unwrap_or(&[]);
             match m {
                 Some(m) => {
-                    let ct = self.region("format-change", m, "");
-                    out.push_str(&format!("<text:change-start text:change-id=\"{ct}\"/>"));
+                    let ct = self.fmt_start(m, out);
                     self.plain_inlines(seg, out);
                     out.push_str(&format!("<text:change-end text:change-id=\"{ct}\"/>"));
                 }
@@ -478,11 +497,8 @@ impl Writer {
                 "</text:p>"
             }
         };
-        // A paragraph formatting change covers the paragraph's content.
-        let para_ct = paras.last().and_then(|q| q.fmt_change.as_deref()).map(|c| self.region("format-change", &c.mark, ""));
-        if let Some(ct) = &para_ct {
-            out.push_str(&format!("<text:change-start text:change-id=\"{ct}\"/>"));
-        }
+        // A format change over the previous paragraph's mark ends where this paragraph begins.
+        ins_close(&mut self.open_fmt, out);
         let tracked = paras.len() > 1
             || p.inlines.iter().any(|i| matches!(i, Inline::Text(_, f) | Inline::Ruby { fmt: f, .. } if f.ins.is_some() || f.del.is_some()));
         if tracked {
@@ -498,13 +514,14 @@ impl Writer {
             self.close_ins(out);
             self.fmt_inlines(&p.inlines, out);
         }
-        if let Some(ct) = &para_ct {
-            out.push_str(&format!("<text:change-end text:change-id=\"{ct}\"/>"));
-        }
         // An inserted paragraph mark: the insertion runs on past the paragraph's end.
         match paras.last().and_then(|q| q.mark_ins.as_deref()) {
             Some(m) => self.open_ins(m, out),
             None => self.close_ins(out),
+        }
+        // A paragraph formatting change is a format change over the mark, which holds paragraph formatting.
+        if let Some(c) = paras.last().and_then(|q| q.fmt_change.as_deref()) {
+            self.open_fmt = Some((c.mark.clone(), self.fmt_start(&c.mark, out)));
         }
         out.push_str(tag);
         self.chain.clear();
@@ -804,7 +821,7 @@ fn fmt_mark(i: &Inline) -> Option<&RevMark> {
     }
 }
 
-/// Close the insertion open in `st`.
+/// Close the change range open in `st`.
 fn ins_close(st: &mut Option<(RevMark, String)>, out: &mut String) {
     if let Some((_, ct)) = st.take() {
         out.push_str(&format!("<text:change-end text:change-id=\"{ct}\"/>"));
@@ -1633,6 +1650,8 @@ struct DelState {
     item_used: Vec<bool>,
     /// Insertions open inside the deleted content (text inserted, then deleted).
     ins: Vec<(String, RevMark)>,
+    /// Format changes open inside it (over deleted paragraph marks).
+    fmt_changes: Vec<(String, RevMark)>,
 }
 
 struct Body<'a> {
@@ -1872,6 +1891,12 @@ impl Body<'_> {
         if p.mark_ins.is_none() {
             p.mark_ins = self.open_insertion().map(Box::new);
         }
+        // One ending inside an open format change has its paragraph formatting changed.
+        if p.fmt_change.is_none()
+            && let Some(mark) = self.open_format()
+        {
+            p.fmt_change = Some(Box::new(FmtChange { mark, old: Para::default() }));
+        }
         self.finish_para(p);
     }
 
@@ -1880,6 +1905,15 @@ impl Body<'_> {
         let open = match &self.del {
             Some(d) => &d.ins,
             None => &self.active_ins,
+        };
+        open.last().map(|(_, m)| m.clone())
+    }
+
+    /// The innermost format change open where a paragraph ends (the body, or deleted content).
+    fn open_format(&self) -> Option<RevMark> {
+        let open = match &self.del {
+            Some(d) => &d.fmt_changes,
+            None => &self.active_fmt,
         };
         open.last().map(|(_, m)| m.clone())
     }
@@ -1907,6 +1941,19 @@ impl Body<'_> {
         }
         if p.kind == Kind::Rule && !p.is_empty() {
             p.kind = Kind::Normal;
+        }
+        // ODF keeps who changed the formatting, not what it was: the old formatting is the current one.
+        if let Some(c) = p.fmt_change.as_deref_mut() {
+            c.old = Para {
+                kind: p.kind,
+                list: p.list,
+                align: p.align,
+                page_break: p.page_break,
+                keep_next: p.keep_next,
+                spacing: p.spacing,
+                borders: p.borders,
+                ..Default::default()
+            };
         }
         if matches!(p.kind, Kind::Code | Kind::Heading(_) | Kind::Title) {
             for i in &mut p.inlines {
@@ -2030,11 +2077,13 @@ impl Body<'_> {
                 self.tracked_start(q, a);
                 return;
             }
-            // Inside deleted content: only insertions (text inserted, then deleted) nest.
+            // Inside deleted content: insertions and format changes over paragraph marks nest.
             if matches!(local(q), "change-start" | "change-end") {
                 let regions = &self.regions;
+                let start = local(q) == "change-start";
                 if let Some(d) = &mut self.del {
-                    change_mark(regions, &mut d.ins, RevisionKind::Insert, local(q) == "change-start", a);
+                    change_mark(regions, &mut d.ins, RevisionKind::Insert, start, a);
+                    change_mark(regions, &mut d.fmt_changes, RevisionKind::Format, start, a);
                 }
                 return;
             }
@@ -2272,6 +2321,7 @@ impl Body<'_> {
                         lists: std::mem::take(&mut self.lists),
                         item_used: std::mem::take(&mut self.item_used),
                         ins: Vec::new(),
+                        fmt_changes: Vec::new(),
                     });
                 }
             }
@@ -2340,9 +2390,10 @@ impl Body<'_> {
         };
         let n = paras.len();
         let mut it = paras.into_iter();
-        let mut first_mark_ins = None;
+        let (mut first_mark_ins, mut first_fmt) = (None, None);
         if let Some(first) = it.next() {
             first_mark_ins = first.mark_ins;
+            first_fmt = first.fmt_change;
             append(&mut cur, first.inlines);
         }
         if n < 2 {
@@ -2353,6 +2404,7 @@ impl Body<'_> {
         // The host paragraph now ends at the first deleted paragraph's mark.
         cur.mark_del = Some(Box::new(mark.clone()));
         cur.mark_ins = first_mark_ins;
+        cur.fmt_change = first_fmt;
         self.finish_para(cur);
         for (k, mut p) in it.enumerate() {
             if k + 2 == n {
@@ -3684,6 +3736,7 @@ mod tests {
         p.insert_text(p.len(), " here", &CharProps::default()).unwrap();
         let mut q = wordcraft_doc::Paragraph::with_text("Centred", CharProps::default());
         q.props.align = Some(Align::Center);
+        q.props.keep_next = Some(true);
         q.props.fmt_change = PropChange::boxed(1, ParaProps::default());
         d.body = vec![wordcraft_doc::para_block(p), wordcraft_doc::para_block(q)];
         let bytes = export(&d).unwrap();
@@ -3693,15 +3746,113 @@ mod tests {
         assert!(xml.contains(r#"<text:changed-region xml:id="ct1" text:id="ct1">"#), "{xml}");
         let back = import(&bytes).unwrap();
         let s = |v: &str| v.to_string();
-        // The paragraph's change comes back on its text: ODF doesn't say which formatting changed.
-        assert_eq!(
-            fmt_runs(&back),
-            vec![vec![(s("Bold "), None), (s("word"), Some(s("Alice"))), (s(" here"), None)], vec![(s("Centred"), Some(s("Bob")))]]
-        );
+        assert_eq!(fmt_runs(&back), vec![vec![(s("Bold "), None), (s("word"), Some(s("Alice"))), (s(" here"), None)], vec![(s("Centred"), None)]]);
+        // The paragraph's change comes back on the paragraph, and Reject keeps its formatting.
+        assert_eq!(para_changes(&back), vec![(s("Bold word here"), None), (s("Centred"), Some((s("Bob"), true)))]);
         let dates: Vec<_> = back.revisions.iter().map(|r| r.date.as_str()).collect();
         assert_eq!(dates, ["2024-03-01T10:00:00", "2024-03-02T11:30:00"]);
         let Some(wordcraft_doc::Block::Para(p)) = back.body.first().map(|b| &**b) else { panic!("a paragraph") };
         assert_eq!(p.run_ranges().nth(1).map(|(_, cp)| cp.bold), Some(Some(true)), "the new formatting stays");
+    }
+
+    /// Every paragraph (body and table cells, in order) as (text, author of its formatting change
+    /// and whether rejecting it keeps the formatting).
+    type ParaChanges = Vec<(String, Option<(String, bool)>)>;
+
+    fn para_changes(doc: &Document) -> ParaChanges {
+        fn walk(doc: &Document, bl: &wordcraft_doc::Blocks, out: &mut ParaChanges) {
+            for b in bl {
+                match &**b {
+                    wordcraft_doc::Block::Para(p) => out.push((
+                        p.text.clone(),
+                        p.props.fmt_change.as_deref().map(|c| {
+                            let author = doc.revisions.get(c.rev as usize).map(|r| r.author.clone()).unwrap_or_default();
+                            (author, c.old.formatting() == p.props.formatting())
+                        }),
+                    )),
+                    wordcraft_doc::Block::Table(t) => {
+                        for r in &t.rows {
+                            for c in &r.cells {
+                                walk(doc, &c.blocks, out);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(doc, &doc.body, &mut out);
+        out
+    }
+
+    #[test]
+    fn paragraph_format_changes_stay_on_their_paragraphs() {
+        use wordcraft_doc::RevisionKind::{Delete, Format};
+        use wordcraft_doc::props::{CharProps, ParaProps, PropChange};
+        let mut d = Document::new();
+        d.settings.track_changes = true;
+        for (kind, who) in [(Format, "Alice"), (Format, "Bob"), (Delete, "Dee"), (Format, "Carl")] {
+            d.revisions.push(wordcraft_doc::Revision::new(kind, who, "2024-03-01T10:00:00"));
+        }
+        let para = |text: &str, cp: CharProps, change: Option<u32>, deleted_mark: bool| {
+            let mut p = wordcraft_doc::Paragraph::with_text(text, cp);
+            p.props.fmt_change = change.and_then(|r| PropChange::boxed(r, ParaProps::default()));
+            p.mark.del = deleted_mark.then_some(2);
+            wordcraft_doc::para_block(p)
+        };
+        let plain = CharProps::default;
+        let deleted = CharProps { del: Some(2), ..Default::default() };
+        let changed = CharProps { fmt_change: PropChange::boxed(0, CharProps::default()), ..Default::default() };
+        d.body = vec![
+            // Joined at deleted marks: changes on the first, a deleted middle and neither last.
+            para("One", plain(), Some(0), true),
+            para("gone", deleted, Some(3), true),
+            para("two", plain(), None, false),
+            // Joined, with a change on the last paragraph only.
+            para("Three", plain(), None, true),
+            para("four", plain(), Some(1), false),
+            // An empty paragraph, and one whose text has a change of its own.
+            para("", plain(), Some(3), false),
+            para("all", changed, Some(1), false),
+        ];
+        let back = import(&export(&d).unwrap()).unwrap();
+        let s = |v: &str| v.to_string();
+        let ch = |who: &str| Some((s(who), true));
+        assert_eq!(
+            para_changes(&back),
+            vec![
+                (s("One"), ch("Alice")),
+                (s("gone"), ch("Carl")),
+                (s("two"), None),
+                (s("Three"), None),
+                (s("four"), ch("Bob")),
+                (s(""), ch("Carl")),
+                (s("all"), ch("Bob"))
+            ]
+        );
+        let changed_runs: Vec<_> = fmt_runs(&back).into_iter().flatten().filter(|(_, who)| who.is_some()).collect();
+        assert_eq!(changed_runs, vec![(s("all"), Some(s("Alice")))], "only the run's own change is on text");
+        let deleted_marks: Vec<_> = marks(&back).into_iter().map(|(_, m)| m.1).collect();
+        assert_eq!(deleted_marks, [true, true, false, true, false, false, false]);
+    }
+
+    #[test]
+    fn paragraph_format_changes_end_before_a_table_and_inside_a_cell() {
+        let regions =
+            region("f1", "format-change", "Alice", "2024-03-01T10:00:00", "") + &region("f2", "format-change", "Bob", "2024-03-02T10:00:00", "");
+        let table = r#"<table:table><table:table-column/><table:table-row><table:table-cell><text:p>Cell<text:change-start text:change-id="f2"/></text:p><text:change-end text:change-id="f2"/></table:table-cell></table:table-row></table:table>"#;
+        let body = format!(
+            r#"<text:p>Before<text:change-start text:change-id="f1"/></text:p><text:change-end text:change-id="f1"/>{table}<text:p>End.</text:p>"#
+        );
+        let content = format!(
+            r#"<office:document-content {NS_TC} xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"><office:body><office:text><text:tracked-changes>{regions}</text:tracked-changes>{body}</office:text></office:body></office:document-content>"#
+        );
+        let doc = import(&package(&content, None)).unwrap();
+        let s = |v: &str| v.to_string();
+        let want = vec![(s("Before"), Some((s("Alice"), true))), (s("Cell"), Some((s("Bob"), true))), (s("End."), None)];
+        assert_eq!(para_changes(&doc), want);
+        let back = import(&export(&doc).unwrap()).unwrap();
+        assert_eq!(para_changes(&back), want, "after a save");
     }
 
     #[test]
@@ -3728,6 +3879,9 @@ mod tests {
         let s = |v: &str| v.to_string();
         let runs: Vec<_> = fmt_runs(&doc).into_iter().flatten().collect();
         assert_eq!(runs, vec![(s("a"), None), (s("gonex"), None), (s("b"), None), (s("c"), Some(s("B"))), (s("d"), Some(s("B")))]);
+        // The paragraph marks it covers change too; one left open at a deleted region's end doesn't.
+        let ch = Some((s("B"), true));
+        assert_eq!(para_changes(&doc), vec![(s("agonexbc"), ch.clone()), (s("d"), ch)]);
     }
 
     #[test]
