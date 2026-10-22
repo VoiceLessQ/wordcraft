@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 
+use wordcraft_doc::table::{MAX_COLS, MAX_ROWS};
 use wordcraft_doc::{Align, Document};
 
 use crate::html::decode_entity;
@@ -512,15 +513,19 @@ fn parse_blocks(lines: &[String], depth: usize, level: u8, refs: &Refs) -> Vec<F
                     let p = Para { align: a, inlines: parse_inlines(s, &Fmt::default(), depth, refs), ..Default::default() };
                     Cell { blocks: vec![FBlock::Para(p)], header, ..Default::default() }
                 };
-                table.rows.push(head.iter().zip(&aligns).map(|(s, a)| cell(s, true, *a)).collect());
+                // The document keeps no more columns or rows than this, so cells past them aren't built.
+                let cols = aligns.len().min(MAX_COLS);
+                table.rows.push(head.iter().zip(&aligns).take(cols).map(|(s, a)| cell(s, true, *a)).collect());
                 i += 2;
                 while let Some(l) = lines.get(i) {
                     if is_blank(l) || !l.contains('|') || interrupts(l) {
                         break;
                     }
-                    let mut cells = split_row(l);
-                    cells.resize(aligns.len(), String::new());
-                    table.rows.push(cells.iter().zip(&aligns).map(|(s, a)| cell(s, false, *a)).collect());
+                    if table.rows.len() < MAX_ROWS {
+                        let mut cells = split_row(l);
+                        cells.resize(cols, String::new());
+                        table.rows.push(cells.iter().zip(&aligns).map(|(s, a)| cell(s, false, *a)).collect());
+                    }
                     i += 1;
                 }
                 out.push(FBlock::Table(table));
@@ -1836,6 +1841,25 @@ mod tests {
         assert!(matches!(&p1.inlines[0], Inline::Text(_, f) if !f.code));
         let FBlock::Para(p2) = &t.rows[1][2].blocks[0] else { panic!() };
         assert!(matches!(&p2.inlines[0], Inline::Text(_, f) if !f.code));
+    }
+
+    #[test]
+    fn table_cells_past_the_document_limits_are_not_built() {
+        // Every body row was padded to the header's width before any cap (#3701).
+        let wide = format!("{}|\n{}|\n|\n| b |\n", "|a".repeat(50_000), "|-".repeat(50_000));
+        let flow = parse(&wide);
+        let FBlock::Table(t) = &flow.blocks[0] else { panic!("expected table") };
+        assert_eq!(t.rows.len(), 3);
+        assert!(t.rows.iter().all(|r| r.len() == MAX_COLS));
+        assert_eq!(t.rows[2][0].text(), "b");
+        // Rows past the limit still belong to the table, so the text after it reads as before.
+        let tall = format!("| a |\n| - |\n{}\nafter\n", "| x |\n".repeat(MAX_ROWS + 10));
+        let flow = parse(&tall);
+        let FBlock::Table(t) = &flow.blocks[0] else { panic!("expected table") };
+        assert_eq!(t.rows.len(), MAX_ROWS);
+        let FBlock::Para(p) = &flow.blocks[1] else { panic!("expected paragraph") };
+        assert_eq!(p.text(), "after");
+        assert_eq!(flow.blocks.len(), 2);
     }
 
     #[test]
