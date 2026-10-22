@@ -220,8 +220,8 @@ impl FileBrowser {
     }
 
     /// OK: a highlighted folder, or a typed folder, is opened; otherwise the typed name is the
-    /// pick. Save adds the chosen type's extension to a name without one and asks once more
-    /// before replacing a file; Open wants a file that exists.
+    /// pick. Save adds the chosen type's extension to a name without one (an export, to a name
+    /// without the export's) and asks once more before replacing a file; Open wants a file that exists.
     pub(crate) fn accept(&mut self) -> Step {
         if let Some(dir) = self.selected.take().filter(|p| p.is_dir()) {
             self.navigate(dir);
@@ -242,7 +242,13 @@ impl FileBrowser {
                 Step::Stay
             }
             FileDialogRequest::Save { .. } => {
-                if path.extension().is_none()
+                if let AfterPick::Export { ext } = &self.after {
+                    // The chosen type is the format, so its extension goes on any name without it.
+                    let want = export_file_ext(ext);
+                    if !path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case(want)) {
+                        path.as_mut_os_string().push(format!(".{want}"));
+                    }
+                } else if path.extension().is_none()
                     && let Some(ext) = self.exts().first().filter(|e| e.as_str() != "*")
                 {
                     path.set_extension(ext);
@@ -615,7 +621,10 @@ mod tests {
         assert!(b.name.ends_with(".txt"), "{}", b.name);
         assert!(matches!(&b.after, AfterPick::Export { ext } if ext == "txt"));
         b.navigate(dir.clone());
+        // A name typed afterwards with another extension still gets the chosen format's.
+        b.name = "notes.docx".into();
         let Step::Pick(path) = b.accept() else { panic!("picked") };
+        assert_eq!(path.file_name().unwrap(), "notes.docx.txt");
         a.close_file_browser(Some(path.clone()));
         assert!(std::fs::read_to_string(&path).unwrap().contains("Exported in WordCraft"));
         // Word 2003 XML starts on its own type, though Word XML writes .xml too.
