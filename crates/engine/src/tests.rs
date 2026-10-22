@@ -1809,19 +1809,22 @@ fn select_extend_from_a_table_paragraph_selects_the_document() {
     assert_eq!(b, s.doc.end_of(StoryRef::Body));
 }
 
-/// #1596: tables nest 24 deep at most, the depth the DOCX reader and writer keep. Insert › Table
-/// in the deepest cell says so; a table pasted there brings its text as paragraphs.
+/// #1596, #3618: tables nest only as deep as a `.json` save (and so an AutoRecover snapshot)
+/// reads back. Insert › Table in the deepest cell says so; a table pasted there brings its text
+/// as paragraphs.
 #[test]
-fn tables_nest_at_most_24_deep() {
+fn tables_nest_only_as_deep_as_a_json_save_reads() {
     use wordcraft_doc::table::MAX_TABLE_DEPTH;
     let mut s = s();
     for _ in 0..MAX_TABLE_DEPTH {
         run(&mut s, "insert.table", json!({"rows": 1, "cols": 1}));
     }
     assert_eq!(s.sel.focus.path.depth(), MAX_TABLE_DEPTH);
+    let saved = crate::io::save_bytes("deep.json", &s.doc).unwrap();
+    assert_eq!(crate::io::open_bytes("deep.json", &saved).map(|d| d == s.doc), Ok(true));
     let before = s.doc.clone();
     let e = s.run("insert.table", &json!({"rows": 1, "cols": 1})).unwrap_err();
-    assert!(e.to_string().contains("24 deep"), "{e}");
+    assert!(e.to_string().contains(&format!("{MAX_TABLE_DEPTH} deep")), "{e}");
     assert_eq!(s.doc, before);
     run(&mut s, "edit.paste", json!({"text": "b", "html": "<table><tr><td>b</td></tr></table>"}));
     let cell = s.sel.focus.path.clone();
