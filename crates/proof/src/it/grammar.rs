@@ -159,7 +159,7 @@ fn ends_sentence(gap: &str, prev: &str) -> bool {
         return false;
     }
     let rest = t.trim_start_matches(['.', '!', '?']).trim_start_matches(['"', '”', '’', '\'', ')', '»', ']']);
-    rest.starts_with(char::is_whitespace) && rest.trim_start().chars().all(|c| matches!(c, '"' | '“' | '«' | '(' | '[' | '\'' | '—'))
+    rest.starts_with(char::is_whitespace) && rest.trim_start().chars().all(|c| matches!(c, '"' | '“' | '‘' | '«' | '(' | '[' | '\'' | '—'))
 }
 
 fn repeated_words(text: &str, ws: &[(usize, usize)], v: &mut Vec<Issue>) {
@@ -383,6 +383,7 @@ mod tests {
         test_dict_install();
         // A quote opening the next sentence doesn't hide it.
         assert_eq!(fixes("Vado a Roma. poi torno! e tu? «bene», dice."), vec![pair("poi", "Poi"), pair("e", "E"), pair("bene", "Bene")]);
+        assert_eq!(fixes("Vado. ‘poi’ torno."), vec![pair("poi", "Poi")]);
         // An abbreviation or an ellipsis doesn't end a sentence.
         assert!(fixes("Il dott. rossi è qui... forse.").is_empty(), "{:?}", fixes("Il dott. rossi è qui... forse."));
     }
