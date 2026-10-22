@@ -3362,16 +3362,17 @@ fn hostile_params_never_panic() {
             let mut s = Session::new(crate::sample::sample_document());
             assert_ne!(s.read_aloud.backend, crate::speech::Backend::System, "tests must never start real speech");
             let r = s.run(spec.id, j);
-            assert!(!caught_panic(&r), "{} panicked on {j}: {r:?}", spec.id);
+            assert!(!caught_panic(spec.id, &r), "{} panicked on {j}: {r:?}", spec.id);
             s.clamp_selection();
             let _ = s.layout();
         }
     }
 }
 
-/// A command panic that `Session::run`'s guard turned into an error: still a crash path (#3718).
-fn caught_panic(r: &Result<serde_json::Value, crate::CmdError>) -> bool {
-    matches!(r, Err(crate::CmdError::Failed(m)) if m.contains(" panicked: "))
+/// A panic in command `id` that `Session::run`'s guard turned into an error: still a crash path
+/// (#3718). Only the guard's own `"{id} panicked: "` counts, not an error that echoes those words.
+fn caught_panic(id: &str, r: &Result<serde_json::Value, crate::CmdError>) -> bool {
+    matches!(r, Err(crate::CmdError::Failed(m)) if m.strip_prefix(id).is_some_and(|rest| rest.starts_with(" panicked: ")))
 }
 
 #[test]
@@ -3379,8 +3380,12 @@ fn caught_panic_flags_a_command_that_panics() {
     let mut s = Session::new(crate::sample::sample_document());
     let boom = crate::CommandSpec::new("test.boom", "Boom", "", |_, _| panic!("boom")).pure();
     s.registry = std::sync::Arc::new(crate::Registry::new(vec![boom]));
-    assert!(caught_panic(&s.run("test.boom", &json!({}))));
-    assert!(!caught_panic(&Err(crate::CmdError::Failed("no picture".into()))));
+    assert!(caught_panic("test.boom", &s.run("test.boom", &json!({}))));
+    assert!(!caught_panic("test.boom", &Err(crate::CmdError::Failed("no picture".into()))));
+    // A command's own error can quote what it was given.
+    let echoed = Session::new(crate::sample::sample_document()).run("developer.control", &json!({"control": "x panicked: y"}));
+    assert!(matches!(&echoed, Err(crate::CmdError::Failed(m)) if m.contains(" panicked: ")), "{echoed:?}");
+    assert!(!caught_panic("developer.control", &echoed), "{echoed:?}");
 }
 
 #[test]
