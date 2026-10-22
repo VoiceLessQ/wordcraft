@@ -8882,6 +8882,39 @@ fn odt_deleted_mark_inside_an_insertion_survives_reject_all() {
     }
 }
 
+/// Gap 19: an ODT format change (ODF 1.3 Part 3 §5.5.6: who and when, not the old formatting)
+/// is listed with its author; Accept All and Reject All both clear it and keep the formatting,
+/// before and after an ODT save.
+#[test]
+fn odt_format_change_is_listed_and_keeps_the_formatting() {
+    use std::io::Write;
+    let ns = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/""#;
+    let content = format!(
+        r#"<office:document-content {ns}><office:automatic-styles><style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style></office:automatic-styles><office:body><office:text><text:tracked-changes><text:changed-region text:id="f1"><text:format-change><office:change-info><dc:creator>Carol</dc:creator><dc:date>2024-04-05T09:15:00</dc:date></office:change-info></text:format-change></text:changed-region></text:tracked-changes><text:p>Plain <text:change-start text:change-id="f1"/><text:span text:style-name="T1">bold</text:span><text:change-end text:change-id="f1"/> end.</text:p></office:text></office:body></office:document-content>"#
+    );
+    let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (name, data) in [("mimetype", "application/vnd.oasis.opendocument.text"), ("content.xml", content.as_str())] {
+        z.start_file(name, o).unwrap();
+        z.write_all(data.as_bytes()).unwrap();
+    }
+    let doc = crate::io::open_bytes("t.odt", &z.finish().unwrap().into_inner()).unwrap();
+    let saved = crate::io::open_bytes("t.odt", &wordcraft_formats::odt::export(&doc).unwrap()).unwrap();
+    for d in [doc, saved] {
+        let mut s = Session::new(d);
+        let list = run(&mut s, "review.changes", json!({}));
+        let changes: Vec<_> = list.as_array().unwrap().iter().map(|c| (c["kind"].clone(), c["author"].clone(), c["text"].clone())).collect();
+        assert_eq!(changes, [(json!("format"), json!("Carol"), json!("bold"))], "{list:#}");
+        for cmd in ["review.rejectAll", "review.acceptAll"] {
+            let mut s = Session::new(s.doc.clone());
+            run(&mut s, cmd, json!({}));
+            assert!(run(&mut s, "review.changes", json!({})).as_array().unwrap().is_empty(), "{cmd}");
+            let p = s.doc.para_at(&s.doc.start_of(StoryRef::Body)).unwrap();
+            assert_eq!((p.text.as_str(), p.props_of_char(6).bold), ("Plain bold end.", Some(true)), "{cmd}");
+        }
+    }
+}
+
 /// #1320: `layout.verticalAlign` sets the section's vertical alignment, Justified included
 /// ("justify", or "both"/"justified"); a value it doesn't know is Top, as before. Section JSON
 /// for `layout.pageSetup` keeps its names.
