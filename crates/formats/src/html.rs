@@ -684,10 +684,22 @@ fn strip_important(v: &str) -> &str {
 }
 
 /// Decode CSS escapes (CSS Syntax §4.3.7): `\` and one to six hex digits, with one whitespace
-/// after them, is that code point; `\` and any other character is that character.
+/// after them, is that code point; `\` and any other character is that character. CR LF, CR and
+/// form feed count as one newline, as CSS reads them (§3.3).
 fn css_unescape(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     let mut it = s.chars().peekable();
+    // Takes a newline (CR LF as one) or other whitespace off the front, if there is one.
+    let skip_space = |it: &mut std::iter::Peekable<std::str::Chars>| match it.peek() {
+        Some('\r') => {
+            it.next();
+            it.next_if_eq(&'\n');
+        }
+        Some(' ' | '\t' | '\n' | '\u{C}') => {
+            it.next();
+        }
+        _ => {}
+    };
     while let Some(c) = it.next() {
         if c != '\\' {
             o.push(c);
@@ -699,14 +711,14 @@ fn css_unescape(s: &str) -> String {
         }
         if hex.is_empty() {
             // Before a newline it continues the line; at the end it is dropped.
-            if let Some(x) = it.next().filter(|x| *x != '\n') {
-                o.push(x);
+            match it.peek() {
+                Some('\r' | '\n' | '\u{C}') => skip_space(&mut it),
+                Some(_) => o.extend(it.next()),
+                None => {}
             }
             continue;
         }
-        if it.peek().is_some_and(|w| matches!(w, ' ' | '\t' | '\n' | '\r' | '\u{C}')) {
-            it.next();
-        }
+        skip_space(&mut it);
         let cp = u32::from_str_radix(&hex, 16).unwrap_or(0);
         o.push(char::from_u32(cp).filter(|c| *c != '\0').unwrap_or('\u{FFFD}'));
     }
@@ -2280,6 +2292,15 @@ mod tests {
         assert!(!html.contains("<p> lead"), "{html}");
         let back = import(&html);
         assert_eq!(back.plain_text(Default::default()).replace('\u{a0}', " "), " lead");
+    }
+
+    #[test]
+    fn css_escapes_read_every_kind_of_newline() {
+        // A backslash before CR LF, CR, LF or form feed continues the line; after hex digits, one
+        // of them (CR LF as one) ends the escape.
+        assert_eq!(css_unescape("A\\\r\nB\\\rC\\\nD\\\u{C}E"), "ABCDE");
+        assert_eq!(css_unescape("\\41\r\nB \\42\u{C}C \\43 D"), "AB BC CD");
+        assert_eq!(css_unescape("x\\'y\\"), "x'y");
     }
 
     #[test]
