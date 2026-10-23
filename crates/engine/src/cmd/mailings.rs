@@ -482,7 +482,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 o.remove("path");
             }
             let r = finish(s, &v)?;
-            s.ui_requests.push(json!({"open": "print"}));
+            s.push_ui_request(json!({"open": "print"}));
             Ok(r)
         })
         .params(r#"{"records"?: "all|current", "from"?: n, "to"?: n} (merges into a new document, as Finish & Merge does, and opens Print for it)"#)
