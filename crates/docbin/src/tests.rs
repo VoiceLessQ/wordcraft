@@ -1417,6 +1417,16 @@ fn hyperlink_target_needs_the_whole_field_name() {
     assert_eq!(super::hyperlink_target(r#"HYPERLINK	"http://example.com""#), Some("http://example.com".into()));
 }
 
+/// A bare `\m` or `\n` keeps the address after it; escapes, an empty address and `%22` read as in DOCX.
+#[test]
+fn hyperlink_target_keeps_the_address_after_a_bare_switch() {
+    assert_eq!(super::hyperlink_target(r#"HYPERLINK \m "http://example.com""#), Some("http://example.com".into()));
+    assert_eq!(super::hyperlink_target(r#"HYPERLINK \n "http://example.com""#), Some("http://example.com".into()));
+    assert_eq!(super::hyperlink_target(r#"HYPERLINK "C:\\Docs\\f.doc""#), Some(r"C:\Docs\f.doc".into()));
+    assert_eq!(super::hyperlink_target(r#"HYPERLINK "" \l "bm""#), Some("#bm".into()));
+    assert_eq!(super::hyperlink_target(r#"HYPERLINK "http://example.com/a%22b""#), Some("http://example.com/a%22b".into()));
+}
+
 #[test]
 fn bookmarks_become_objects() {
     let text = "Hello world\r";
