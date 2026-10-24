@@ -2357,7 +2357,11 @@ impl WordApp {
     /// cover is an error that says why, instead of a switch that is on but saves nothing (#196).
     /// Turning it on for a file only opened here is the go-ahead a save gives (#3307).
     fn set_autosave(&mut self, params: &Value) -> Result<Value, String> {
-        let on = params.get("value").and_then(Value::as_bool).unwrap_or(!self.autosaves());
+        let on = match params.get("value") {
+            None => !self.autosaves(),
+            Some(Value::Bool(on)) => *on,
+            Some(_) => return Err("`value` must be true or false".into()),
+        };
         if on && let Some(block) = self.autosave_block() {
             if block != AutoSaveBlock::NotSavedHere {
                 return Err(block.reason());
@@ -7518,6 +7522,8 @@ mod tests {
         b.run("text.insert", json!({"text": "Opened "})).unwrap();
         b.autosave_tick(now_ms() + 10_000.0);
         assert!(b.session.dirty, "opening alone never rewrites the file");
+        assert!(b.run("file.autosave", json!({"value": "false"})).is_err());
+        assert!(!b.autosaves(), "a value that isn't a bool grants nothing");
         assert_eq!(b.run("file.autosave", json!({})).unwrap(), json!({"value": true}));
         assert!(b.autosaves());
         b.autosave_tick(now_ms() + 20_000.0);
