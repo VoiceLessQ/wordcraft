@@ -285,12 +285,14 @@ pub fn specs() -> Vec<CommandSpec> {
             .params(r#"{"value": bool}  (true: Move with Text, the floating object's vertical position follows its paragraph; false: Fix Position on Page. It stays where it is)"#)
             .when(has_floating),
         CommandSpec::new("arrange.position", "Position", "Layout › Arrange", |s, v| {
-            let preset = p::str(v, "preset").unwrap_or("middleCenter").to_string();
+            let named = p::str(v, "preset");
+            let preset = named.unwrap_or("middleCenter").to_string();
             let (x, y) = (p::f32(v, "x"), p::f32(v, "y"));
             let sect = super::page::sect(s);
             let size = selected(s).map(|(_, o)| obj_size(&o)).unwrap_or((72.0, 72.0));
             with_float(s, |f| {
-                if f.wrap == Wrap::Inline {
+                // Word's nine presets are "with Square Text Wrapping".
+                if f.wrap == Wrap::Inline || named.is_some() {
                     f.wrap = Wrap::Square;
                 }
                 f.h_rel = wordcraft_doc::para::Anchor::Margin;
@@ -303,7 +305,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 f.y = y.unwrap_or(row);
             })
         })
-        .params(r#"{"preset"?: "topLeft|topCenter|topRight|middleLeft|middleCenter|middleRight|bottomLeft|bottomCenter|bottomRight", "x"?: pt, "y"?: pt}"#)
+        .params(r#"{"preset"?: "topLeft|topCenter|topRight|middleLeft|middleCenter|middleRight|bottomLeft|bottomCenter|bottomRight", "x"?: pt, "y"?: pt}  (within the margins; a preset also sets Square wrapping, as Word's Position gallery does)"#)
         .when(has_movable),
         CommandSpec::new("arrange.positionOptions", "More Layout Options", "Layout › Arrange › Position", position_options)
             .params(r#"{"horizontal"?: {"align": "left|center|right|inside|outside"} | {"x": pt}, "vertical"?: {"align": "top|center|bottom|inside|outside"} | {"y": pt}}, each with "relativeTo"?: "margin|page|insideMargin|outsideMargin", across also "column|leftMargin|rightMargin", down also "paragraph|topMargin|bottomMargin" (default margin; paragraph takes `y` only)  (the Layout dialog's Position tab: an axis left out stays as it is; an In Line with Text object floats with Square wrapping)"#)
@@ -2546,6 +2548,20 @@ mod tests {
 
     fn near(a: [f32; 4], b: [f32; 4]) -> bool {
         a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.5)
+    }
+
+    /// Position's nine presets are Word's "with Square Text Wrapping" ones: an object behind or in
+    /// front of the text becomes Square too, while a move by x/y keeps its wrapping.
+    #[test]
+    fn position_presets_wrap_square() {
+        let mut s = Session::new(wordcraft_doc::Document::from_text("one\ntwo"));
+        s.run("insert.shape", &json!({"kind": "rectangle", "width": 100, "height": 50})).unwrap();
+        let wrap = |s: &Session| selected(s).unwrap().1.frame().unwrap().2.wrap;
+        s.run("arrange.wrap", &json!({"wrap": "behindText"})).unwrap();
+        s.run("arrange.position", &json!({"x": 10, "y": 20})).unwrap();
+        assert_eq!(wrap(&s), Wrap::BehindText, "a move by x/y keeps the wrapping");
+        s.run("arrange.position", &json!({"preset": "topLeft"})).unwrap();
+        assert_eq!(wrap(&s), Wrap::Square, "Position in Top Left with Square Text Wrapping");
     }
 
     /// Layout dialog › Position: an exact offset or an alignment per axis, relative to the page,
