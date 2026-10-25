@@ -1566,7 +1566,8 @@ fn axis_rows(ui: &mut Ui, a: &mut AxisForm, across: bool) {
     ui.radio_value(&mut a.aligned, false, tl!("Absolute position"));
     ui.add_enabled_ui(!a.aligned, |ui| {
         let mut v = a.offset / k;
-        let field = egui::DragValue::new(&mut v).speed(1.0 / k).range(-4000.0 / k..=4000.0 / k).measure(unit).max_decimals(2);
+        let field =
+            egui::DragValue::new(&mut v).speed(1.0 / k).range(-4000.0 / k..=4000.0 / k).clamp_existing_to_range(false).measure(unit).max_decimals(2);
         if ui.add(field.update_while_editing(false)).changed() && v.is_finite() {
             a.offset = (v * k).clamp(-4000.0, 4000.0);
         }
@@ -2332,6 +2333,30 @@ mod tests {
                 assert!(!close.get(), "the dialog stays open while drawn");
             }
         }
+    }
+
+    /// An offset past the field's ±4000 pt, as a .docx can hold (its reader takes up to 14,400 pt),
+    /// survives drawing the tab: egui doesn't clamp it into the field, so OK sends nothing.
+    #[test]
+    fn position_dialog_keeps_an_offset_past_its_range() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut a = picture_app(40, 20);
+        a.run("arrange.bounds", json!({"page": 0, "x": 100, "y": 150})).unwrap();
+        let at = wordcraft_engine::cmd::objects::selected(&a.session).unwrap().0;
+        let para = a.session.doc.para_mut(at.story, &at.path).unwrap();
+        para.object_at_mut(at.off).and_then(|o| o.float_mut()).unwrap().x = 5000.0;
+        para.touch();
+        a.session.touch();
+        a.run("ui.dialog", json!({"name": "layoutPosition"})).unwrap();
+        let mut d = form(&mut a);
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            body(&mut a, ui, &mut d);
+        })
+        .drop_without_applying_deltas();
+        let LayoutDialog::Position(f) = &d else { panic!("position") };
+        assert_eq!(f.horizontal.offset, 5000.0);
+        assert_eq!(f.params(), json!({}), "nothing typed, nothing to send");
     }
 
     /// An In Line with Text picture opens at its place on the page, and OK floats it there with
