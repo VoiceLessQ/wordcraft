@@ -648,8 +648,8 @@ fn agents(app: &mut WordApp, ui: &mut Ui) {
             );
             ui.hyperlink_to(tl!("WordCraft releases"), "https://github.com/storytold/wordcraft/releases");
         }
-        for (title, text) in agent_setups(found) {
-            copy_box(ui, title, &text);
+        for (client, title, text) in agent_setups(found) {
+            copy_box(app, ui, client, title, &text);
         }
         ui.add_space(6.0);
         ui.label(tl!(
@@ -666,23 +666,43 @@ fn agents(app: &mut WordApp, ui: &mut Ui) {
     ui.label(tl!("Scripts can drive the app through the JSON control channel: start WordCraft with `--control <port>`."));
 }
 
-/// The Agents pane's setups (a title, then the text to copy) for the server command `found`, or
-/// `wordcraft-cli mcp` on the PATH. Commands and JSON, never translated; the i18n audit exempts them.
-pub(crate) fn agent_setups(found: Option<Vec<String>>) -> [(&'static str, String); 3] {
+/// The Agents pane's setups (the `ui.copyMcpSetup` client, a title, then the text to copy) for the
+/// server command `found`, or `wordcraft-cli mcp` on the PATH. Commands and JSON, never
+/// translated; the i18n audit exempts them.
+pub(crate) fn agent_setups(found: Option<Vec<String>>) -> [(&'static str, &'static str, String); 3] {
     let command = found.unwrap_or_else(|| vec!["wordcraft-cli".into(), "mcp".into()]);
     let line = shell_line(&command, cfg!(windows));
     [
-        ("Claude Code", format!("claude mcp add --scope user wordcraft -- {line}")),
-        ("Codex", format!("codex mcp add wordcraft -- {line}")),
-        ("Claude Desktop, Cursor, LM Studio and other apps set up with a JSON file", mcp_json(&command)),
+        ("claudeCode", "Claude Code", format!("claude mcp add --scope user wordcraft -- {line}")),
+        ("codex", "Codex", format!("codex mcp add wordcraft -- {line}")),
+        ("json", "Claude Desktop, Cursor, LM Studio and other apps set up with a JSON file", mcp_json(&command)),
     ]
 }
 
+/// The setup whose Copy button says Copied (egui's temporary data).
+fn copied_id() -> egui::Id {
+    egui::Id::new("options_agents_copied")
+}
+
+/// `ui.copyMcpSetup {"client": "claudeCode" | "codex" | "json"}`: puts that setup for this install's
+/// MCP server on the clipboard and returns it as `text`. Only these setups, never arbitrary text.
+pub(crate) fn copy_mcp_setup(app: &mut WordApp, p: &Value) -> Result<Value, String> {
+    let client = p.get("client").and_then(Value::as_str).unwrap_or_default();
+    let (_, _, text) = agent_setups(app.services.mcp_command.clone())
+        .into_iter()
+        .find(|(c, _, _)| *c == client)
+        .ok_or("`client` must be \"claudeCode\", \"codex\" or \"json\"")?;
+    if let Some(ctx) = &app.ctx {
+        ctx.copy_text(text.clone());
+        ctx.data_mut(|d| d.insert_temp(copied_id(), text.clone()));
+    }
+    Ok(json!({"client": client, "text": text}))
+}
+
 /// A titled snippet in a box, with a Copy button that says Copied once it has copied this one.
-fn copy_box(ui: &mut Ui, title: &str, text: &str) {
+fn copy_box(app: &mut WordApp, ui: &mut Ui, client: &str, title: &str, text: &str) {
     let t = Tokens::get(ui.ctx());
-    let id = egui::Id::new("options_agents_copied");
-    let copied = ui.data(|d| d.get_temp::<String>(id)).is_some_and(|c| c == text);
+    let copied = ui.data(|d| d.get_temp::<String>(copied_id())).is_some_and(|c| c == text);
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.label(RichText::new(tl!(title)).font(semibold(13.0)));
@@ -690,9 +710,10 @@ fn copy_box(ui: &mut Ui, title: &str, text: &str) {
         // Three buttons say Copy; screen readers hear which one.
         let spoken = format!("{} {}", if copied { tl!("Copied") } else { tl!("Copy") }, tl!(title));
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &spoken));
-        if resp.clicked() {
-            ui.ctx().copy_text(text.to_string());
-            ui.data_mut(|d| d.insert_temp(id, text.to_string()));
+        if resp.clicked()
+            && let Err(e) = app.run("ui.copyMcpSetup", json!({"client": client}))
+        {
+            app.status(e);
         }
     });
     egui::Frame::new().fill(t.input).stroke(egui::Stroke::new(1.0, t.input_border)).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
@@ -1254,6 +1275,20 @@ mod tests {
         let h = agents_harness(None);
         assert!(h.query_by_label("WordCraft releases").is_some());
         assert!(h.query_by_label("claude mcp add --scope user wordcraft -- wordcraft-cli mcp").is_some());
+    }
+
+    /// `ui.copyMcpSetup` copies one of the pane's setups by name and nothing else.
+    #[test]
+    fn copy_mcp_setup_copies_only_the_named_setups() {
+        let services = Services { mcp_command: Some(vec!["/usr/bin/wordcraft-cli".into(), "mcp".into()]), ..Default::default() };
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), services);
+        let r = a.run("ui.copyMcpSetup", json!({"client": "codex"})).unwrap();
+        assert_eq!(r["text"], "codex mcp add wordcraft -- /usr/bin/wordcraft-cli mcp");
+        let r = a.run("ui.copyMcpSetup", json!({"client": "json"})).unwrap();
+        assert!(r["text"].as_str().unwrap().contains("\"mcpServers\""));
+        for junk in [json!({}), json!({"client": "bash"}), json!({"client": 5}), json!({"text": "anything"})] {
+            assert!(a.run("ui.copyMcpSetup", junk.clone()).is_err(), "{junk}");
+        }
     }
 
     #[test]

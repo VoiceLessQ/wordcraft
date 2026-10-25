@@ -148,7 +148,7 @@ impl Exempt {
             names.extend([m.company, m.model, m.version].map(str::to_string));
         }
         // File › Options › Agents: commands and JSON to paste into AI apps, not interface wording.
-        names.extend(crate::options::agent_setups(app.services.mcp_command.clone()).map(|(_, text)| text));
+        names.extend(crate::options::agent_setups(app.services.mcp_command.clone()).map(|(_, _, text)| text));
         // The spelling/grammar suggestions popup (#3340): dictionary and grammar-rule words, not
         // interface text.
         if let Some(sugg) = app.canvas.context_issue.as_ref().and_then(|i| i.get("suggestions")).and_then(Value::as_array) {
