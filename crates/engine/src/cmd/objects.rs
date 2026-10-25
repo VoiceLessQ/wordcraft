@@ -861,27 +861,27 @@ fn move_object_once(s: &mut Session, pos: &Pos, page: usize, x: f32, y: f32, (w,
 /// column / paragraph that keeps it where it is, so it can be moved by an offset.
 fn unalign(s: &mut Session) -> Result<(), CmdError> {
     let (pos, _) = selected(s).ok_or_else(|| CmdError::Disabled("no picture or shape selected".into()))?;
-    unalign_at(s, &pos)
+    unalign_at(s, &pos, (true, true))
 }
 
-/// [`unalign`] for the object at `pos`.
-fn unalign_at(s: &mut Session, pos: &Pos) -> Result<(), CmdError> {
+/// [`unalign`] for the object at `pos`, on the axes asked for (across, down).
+fn unalign_at(s: &mut Session, pos: &Pos, (across, down): (bool, bool)) -> Result<(), CmdError> {
     use wordcraft_doc::para::Anchor;
     let pos = pos.clone();
     let obj = s.doc.para_at(&pos).and_then(|p| p.object_at(pos.off)).cloned().ok_or_else(|| CmdError::Failed("object vanished".into()))?;
     let Some((_, _, float)) = obj.frame() else { return Ok(()) };
-    if float.h_align.is_none() && float.v_align.is_none() {
+    if !(across && float.h_align.is_some() || down && float.v_align.is_some()) {
         return Ok(());
     }
     let hit = s.layout().object(&pos, s.page_hint).ok_or_else(|| CmdError::Failed("the object isn't laid out".into()))?;
     let (ox, oy) = (hit.rect.x - hit.origin.x, hit.rect.y - hit.origin.y);
     edit_float(s, &pos, |f| {
-        if f.h_align.is_some() {
+        if across && f.h_align.is_some() {
             f.h_align = None;
             f.h_rel = Anchor::Column;
             f.x = ox.clamp(-MAX_OFFSET, MAX_OFFSET);
         }
-        if f.v_align.is_some() {
+        if down && f.v_align.is_some() {
             f.v_align = None;
             f.v_rel = Anchor::Paragraph;
             f.y = oy.clamp(-MAX_OFFSET, MAX_OFFSET);
@@ -1052,7 +1052,8 @@ fn align(s: &mut Session, v: &Value) -> CmdResult {
     // One at a time in document order: moving one can reflow the text a later one follows.
     targets.sort_by(|a, b| a.0.cmp(&b.0));
     for (pos, target) in targets {
-        unalign_at(s, &pos)?;
+        // Only the axis that moves; an alignment on the other one stays.
+        unalign_at(s, &pos, (across, !across))?;
         let hit = s.layout().object(&pos, s.page_hint).ok_or_else(|| CmdError::Failed("an object isn't laid out".into()))?;
         let d = target - if across { hit.rect.x } else { hit.rect.y };
         edit_float(s, &pos, |f| {
@@ -2738,6 +2739,32 @@ mod tests {
             let tops: Vec<f32> = picked.iter().map(|p| rect_of(&mut s, p)[1]).collect();
             assert!(tops.iter().all(|t| (t - sect.margin_top).abs() < 0.5), "follower picked first {follower_picked_first}: {tops:?}");
         }
+    }
+
+    /// Aligning objects across leaves an alignment on the other axis alone: a shape aligned to the
+    /// top margin is still aligned there after Align Left, so text changes can't move it down.
+    #[test]
+    fn align_across_keeps_a_vertical_alignment() {
+        use wordcraft_doc::para::{Anchor, FloatAlign};
+        let mut s = Session::new(wordcraft_doc::Document::new());
+        s.run("document.setText", &json!({"text": "one\ntwo\nthree"})).unwrap();
+        for x in [100, 300] {
+            s.sel = Selection::caret(s.doc.start_of(StoryRef::Body));
+            s.run("insert.shape", &json!({"kind": "rectangle", "width": 60, "height": 40})).unwrap();
+            let at = json!({"horizontal": {"x": x, "relativeTo": "page"}, "vertical": {"align": "top", "relativeTo": "margin"}});
+            s.run("arrange.positionOptions", &at).unwrap();
+        }
+        s.run("select.addObject", &json!({"index": 1})).unwrap();
+        let picked = picked_objects(&s);
+        assert_eq!(picked.len(), 2);
+        s.run("arrange.align", &json!({"value": "left", "to": "selected"})).unwrap();
+        for pos in &picked {
+            let o = s.doc.para_at(pos).and_then(|p| p.object_at(pos.off)).cloned().unwrap();
+            let f = o.frame().unwrap().2.clone();
+            assert_eq!((f.v_rel, f.v_align), (Anchor::Margin, Some(FloatAlign::Start)), "still aligned to the top margin");
+        }
+        let lefts: Vec<f32> = picked.iter().map(|p| rect_of(&mut s, p)[0]).collect();
+        assert!((lefts[0] - lefts[1]).abs() < 0.5, "aligned left with each other: {lefts:?}");
     }
 
     /// Two floating shapes, Shift+clicked together and grouped: one object that moves as one with
