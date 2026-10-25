@@ -307,7 +307,8 @@ impl WordApp {
     /// `ui.fileBrowser`: the built-in browser for `purpose` (document, picture, recipients, save,
     /// export), even when a system dialog was asked for and never showed up (it is given up as cancelled).
     pub(crate) fn browse_builtin(&mut self, purpose: &str) {
-        self.give_up_file_dialog();
+        // An export that was waiting on the system dialog keeps its format.
+        let pending = self.give_up_file_dialog();
         if self.file_browser.open.is_some() {
             return;
         }
@@ -318,7 +319,11 @@ impl WordApp {
                 FileDialogRequest::Save { name: self.default_save_name(), dir: None },
                 AfterPick::SaveAs { after: crate::file_dialogs::AfterSave::Nothing, document: self.session.document_id() },
             ),
-            "export" => (FileDialogRequest::Save { name: format!("{}.pdf", self.title_stem()), dir: None }, AfterPick::Export { ext: "pdf".into() }),
+            "export" => {
+                let ext = pending.unwrap_or_else(|| "pdf".into());
+                let name = format!("{}.{}", self.title_stem(), export_file_ext(&ext));
+                (FileDialogRequest::Save { name, dir: None }, AfterPick::Export { ext })
+            }
             _ => (FileDialogRequest::Open { purpose: "document".into() }, AfterPick::OpenDocument),
         };
         self.show_file_browser(req, after, false);
@@ -637,6 +642,46 @@ mod tests {
         let req = FileDialogRequest::Save { name: "x.xml".into(), dir: None };
         let b = FileBrowser::new(req, AfterPick::Export { ext: crate::print_page::EXPORT_WORD_2003.into() }, dir.clone(), false);
         assert_eq!(b.filters[b.filter].0, "Word 2003 XML Document (*.xml)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An export waiting on a system dialog that never showed up keeps its format when Browse
+    /// in WordCraft… takes over, instead of starting over on PDF.
+    #[test]
+    fn browse_in_wordcraft_keeps_a_pending_exports_format() {
+        let services = Services {
+            file_dialog: Some(Box::new(|_req| {
+                let (tx, rx) = channel();
+                // The system dialog never answers.
+                std::mem::forget(tx);
+                rx
+            })),
+            ..Default::default()
+        };
+        let mut a = WordApp::new(Session::new(wordcraft_doc::Document::new()), services);
+        a.export_dialog("rtf");
+        assert!(a.file_dialog.is_some(), "waiting on the system dialog");
+        a.run("ui.fileBrowser", json!({"purpose": "export"})).unwrap();
+        assert!(a.file_dialog.is_none(), "the system dialog is given up");
+        let b = a.file_browser.open.as_ref().expect("the built-in browser is open");
+        assert!(matches!(&b.after, AfterPick::Export { ext } if ext == "rtf"));
+        assert_eq!(b.filters[b.filter].0, "Rich Text Format (*.rtf)");
+        assert!(b.name.ends_with(".rtf"), "{}", b.name);
+    }
+
+    /// Word XML chosen as the export type wins over a Word 2003 XML file already at that path,
+    /// whose format a save by path alone would keep.
+    #[test]
+    fn exporting_word_xml_over_a_word_2003_file_writes_word_xml() {
+        let dir = scratch("export_xml");
+        let path = dir.join("letter.xml").to_string_lossy().into_owned();
+        let mut a = WordApp::new(Session::new(wordcraft_doc::Document::new()), Services::default());
+        a.run("text.insert", json!({"text": "Dear reader"})).unwrap();
+        a.finish_pick(AfterPick::Export { ext: crate::print_page::EXPORT_WORD_2003.into() }, Some(path.clone())).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("w:wordDocument"));
+        a.finish_pick(AfterPick::Export { ext: "xml".into() }, Some(path.clone())).unwrap();
+        let xml = std::fs::read_to_string(&path).unwrap();
+        assert!(xml.contains("pkg:package") && !xml.contains("w:wordDocument"), "Word XML, not Word 2003 XML");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
