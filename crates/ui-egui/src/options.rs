@@ -174,7 +174,7 @@ pub fn page(app: &mut WordApp, ui: &mut Ui) {
                 "language" => language(app, ui),
                 "accessibility" => accessibility(app, ui),
                 "advanced" => advanced(app, ui),
-                "agents" => agents(ui),
+                "agents" => agents(app, ui),
                 _ => general(app, ui),
             }
         });
@@ -629,9 +629,104 @@ fn templates_folder(app: &mut WordApp, ui: &mut Ui) {
     note(ui, "File › New lists the .dotx and .dotm templates here under Personal; Save as Word Template starts here.");
 }
 
-fn agents(ui: &mut Ui) {
-    section(ui, "Agents");
-    ui.label(tl!("Every command is available to scripts and AI agents: run `wordcraft-cli mcp` for an MCP server, or start the app with `--control <port>` for the JSON control channel."));
+/// File › Options › Agents: how an AI app on this computer starts WordCraft's MCP server, ready to
+/// copy. The app runs the server itself, so nothing here signs in anywhere; the command is
+/// [`crate::Services::mcp_command`], or plain `wordcraft-cli mcp` where none was found.
+fn agents(app: &mut WordApp, ui: &mut Ui) {
+    section(ui, "AI apps");
+    if cfg!(target_arch = "wasm32") {
+        ui.label(tl!("AI apps on your computer can write and edit documents through the MCP server of the WordCraft desktop app."));
+    } else {
+        ui.label(tl!(
+            "An AI app on this computer can write and edit documents with WordCraft's commands. Add WordCraft's MCP server to the app once: the app starts it when needed, and there is nothing to sign in to."
+        ));
+        let found = app.services.mcp_command.clone();
+        if found.is_none() {
+            note(
+                ui,
+                "No wordcraft-cli was found beside this copy of WordCraft. Download the command-line tool for your system from the releases page (on a Mac, wordcraft-cli-…-macos-universal.zip) and put it on your PATH.",
+            );
+            ui.hyperlink_to(tl!("WordCraft releases"), "https://github.com/storytold/wordcraft/releases");
+        }
+        for (title, text) in agent_setups(found) {
+            copy_box(ui, title, &text);
+        }
+        ui.add_space(6.0);
+        ui.label(tl!(
+            "Using a local model, for example with Ollama? Choose a model that supports tools; Ollama's model library marks them with a tools label. A model without tool support can chat, but it can't change your documents. Ollama also needs a helper app such as ollmcp, which reads the JSON setup above."
+        ));
+        ui.add_space(6.0);
+        note(
+            ui,
+            "The server opens and saves document files itself. For an AI app to work in a window you have open, start WordCraft with --control 7981 and add --connect 127.0.0.1:7981 after mcp.",
+        );
+    }
+    ui.add_space(8.0);
+    section(ui, "Scripts");
+    ui.label(tl!("Scripts can drive the app through the JSON control channel: start WordCraft with `--control <port>`."));
+}
+
+/// The Agents pane's setups (a title, then the text to copy) for the server command `found`, or
+/// `wordcraft-cli mcp` on the PATH. Commands and JSON, never translated; the i18n audit exempts them.
+pub(crate) fn agent_setups(found: Option<Vec<String>>) -> [(&'static str, String); 3] {
+    let command = found.unwrap_or_else(|| vec!["wordcraft-cli".into(), "mcp".into()]);
+    let line = shell_line(&command, cfg!(windows));
+    [
+        ("Claude Code", format!("claude mcp add --scope user wordcraft -- {line}")),
+        ("Codex", format!("codex mcp add wordcraft -- {line}")),
+        ("Claude Desktop, Cursor, LM Studio and other apps set up with a JSON file", mcp_json(&command)),
+    ]
+}
+
+/// A titled snippet in a box, with a Copy button that says Copied once it has copied this one.
+fn copy_box(ui: &mut Ui, title: &str, text: &str) {
+    let t = Tokens::get(ui.ctx());
+    let id = egui::Id::new("options_agents_copied");
+    let copied = ui.data(|d| d.get_temp::<String>(id)).is_some_and(|c| c == text);
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tl!(title)).font(semibold(13.0)));
+        let resp = ui.button(if copied { tl!("Copied") } else { tl!("Copy") });
+        // Three buttons say Copy; screen readers hear which one.
+        let spoken = format!("{} {}", if copied { tl!("Copied") } else { tl!("Copy") }, tl!(title));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &spoken));
+        if resp.clicked() {
+            ui.ctx().copy_text(text.to_string());
+            ui.data_mut(|d| d.insert_temp(id, text.to_string()));
+        }
+    });
+    egui::Frame::new().fill(t.input).stroke(egui::Stroke::new(1.0, t.input_border)).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.add(egui::Label::new(RichText::new(text).monospace()).selectable(true));
+    });
+}
+
+/// `args` as one line to paste into a terminal. Windows: words with anything but letters, digits
+/// and `-_./:\=@+,` go in double quotes (a Windows path can't hold one). Elsewhere such words go
+/// in single quotes, a quote inside written `'\''`.
+fn shell_line(args: &[String], windows: bool) -> String {
+    let plain =
+        |a: &String, extra: &str| !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:=@+,".contains(c) || extra.contains(c));
+    let word = |a: &String| match (windows, plain(a, if windows { "\\" } else { "" })) {
+        (_, true) => a.clone(),
+        (true, false) => format!("\"{a}\""),
+        (false, false) => format!("'{}'", a.replace('\'', r"'\''")),
+    };
+    args.iter().map(word).collect::<Vec<_>>().join(" ")
+}
+
+/// The `mcpServers` entry that apps set up with a JSON file (Claude Desktop, Cursor, LM Studio…)
+/// read: `command` is the program, `args` the rest. A struct keeps `command` first, as their
+/// guides write it (a JSON object would sort the keys).
+fn mcp_json(command: &[String]) -> String {
+    #[derive(Serialize)]
+    struct Server<'a> {
+        command: &'a str,
+        args: &'a [String],
+    }
+    let Some((program, args)) = command.split_first() else { return String::new() };
+    let servers = std::collections::BTreeMap::from([("wordcraft", Server { command: program, args })]);
+    serde_json::to_string_pretty(&std::collections::BTreeMap::from([("mcpServers", servers)])).unwrap_or_default()
 }
 
 /// Interface theme: Light, Dark, or follow the system's appearance (#115).
@@ -1109,6 +1204,80 @@ mod tests {
         h.run_steps(2);
         assert!(!h.state().session.prefs.typing_replaces_selection);
         assert!(h.query_by_label("Measurement units:").is_some());
+    }
+
+    fn agents_harness(mcp_command: Option<Vec<String>>) -> egui_kittest::Harness<'static, WordApp> {
+        let services = Services { mcp_command, ..Default::default() };
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), services);
+        a.run("file.options", json!({"pane": "agents"})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            a,
+        );
+        h.run_steps(4);
+        h
+    }
+
+    /// File › Options › Agents shows this installation's MCP server command set up for each kind of
+    /// AI app, and Copy puts exactly that snippet on the clipboard.
+    #[test]
+    fn agents_pane_offers_this_installations_mcp_command() {
+        let mut h = agents_harness(Some(vec!["/usr/bin/wordcraft-cli".into(), "mcp".into()]));
+        let claude = "claude mcp add --scope user wordcraft -- /usr/bin/wordcraft-cli mcp";
+        assert!(h.query_by_label(claude).is_some());
+        assert!(h.query_by_label("codex mcp add wordcraft -- /usr/bin/wordcraft-cli mcp").is_some());
+        assert!(h.query_by_label_contains(r#""command": "/usr/bin/wordcraft-cli""#).is_some());
+        assert!(h.query_by_label("WordCraft releases").is_none(), "the CLI was found");
+        assert!(h.query_by_label_contains("Choose a model that supports tools").is_some(), "the local-model note");
+        h.get_by_label("Copy Claude Code").click();
+        let mut copied = Vec::new();
+        for _ in 0..3 {
+            h.step();
+            copied.extend(h.output().platform_output.commands.iter().filter_map(|c| match c {
+                egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                _ => None,
+            }));
+        }
+        assert_eq!(copied, [claude]);
+        assert!(h.query_by_label("Copied Claude Code").is_some());
+        assert!(h.query_by_label("Copy Codex").is_some(), "only the copied one says Copied");
+    }
+
+    /// Without a command-line tool beside the app (the macOS app), the pane links to the download
+    /// and shows the setup for a wordcraft-cli on the PATH.
+    #[test]
+    fn agents_pane_without_a_cli_points_to_the_download() {
+        let h = agents_harness(None);
+        assert!(h.query_by_label("WordCraft releases").is_some());
+        assert!(h.query_by_label("claude mcp add --scope user wordcraft -- wordcraft-cli mcp").is_some());
+    }
+
+    #[test]
+    fn shell_lines_quote_what_a_shell_would_split() {
+        let line = |a: &[&str], windows| super::shell_line(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), windows);
+        assert_eq!(line(&["/usr/bin/wordcraft-cli", "mcp"], false), "/usr/bin/wordcraft-cli mcp");
+        assert_eq!(line(&["/home/u/My Apps/WordCraft.AppImage", "--cli", "mcp"], false), "'/home/u/My Apps/WordCraft.AppImage' --cli mcp");
+        assert_eq!(line(&["/home/o'brien/WordCraft.AppImage"], false), r"'/home/o'\''brien/WordCraft.AppImage'");
+        assert_eq!(line(&["$HOME/wordcraft-cli", ""], false), "'$HOME/wordcraft-cli' ''");
+        assert_eq!(
+            line(&["flatpak", "run", "--command=wordcraft-cli", "ai.storyteller.wordcraft", "mcp"], false),
+            "flatpak run --command=wordcraft-cli ai.storyteller.wordcraft mcp"
+        );
+        assert_eq!(line(&[r"C:\Program Files\WordCraft\wordcraft-cli.exe", "mcp"], true), r#""C:\Program Files\WordCraft\wordcraft-cli.exe" mcp"#);
+        assert_eq!(line(&[r"D:\Apps\wordcraft-cli.exe", "mcp"], true), r"D:\Apps\wordcraft-cli.exe mcp");
+    }
+
+    #[test]
+    fn the_json_config_names_the_program_and_its_arguments() {
+        let config: serde_json::Value = serde_json::from_str(&super::mcp_json(&["/opt/Word Craft/wordcraft-cli".into(), "mcp".into()])).unwrap();
+        assert_eq!(config, json!({"mcpServers": {"wordcraft": {"command": "/opt/Word Craft/wordcraft-cli", "args": ["mcp"]}}}));
+        let text = super::mcp_json(&["wordcraft-cli".into(), "mcp".into()]);
+        assert!(text.find("\"command\"") < text.find("\"args\""), "command comes first: {text}");
+        assert_eq!(super::mcp_json(&[]), "");
     }
 
     /// File › Options › Save › Privacy (#1062): the checkboxes are the document's
