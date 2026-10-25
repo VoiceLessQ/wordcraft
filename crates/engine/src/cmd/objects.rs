@@ -305,6 +305,9 @@ pub fn specs() -> Vec<CommandSpec> {
         })
         .params(r#"{"preset"?: "topLeft|topCenter|topRight|middleLeft|middleCenter|middleRight|bottomLeft|bottomCenter|bottomRight", "x"?: pt, "y"?: pt}"#)
         .when(has_movable),
+        CommandSpec::new("arrange.positionOptions", "More Layout Options", "Layout › Arrange › Position", position_options)
+            .params(r#"{"horizontal"?: {"align": "left|center|right|inside|outside"} | {"x": pt}, "vertical"?: {"align": "top|center|bottom|inside|outside"} | {"y": pt}}, each with "relativeTo"?: "margin|page|insideMargin|outsideMargin", across also "column|leftMargin|rightMargin", down also "paragraph|topMargin|bottomMargin" (default margin; paragraph takes `y` only)  (the Layout dialog's Position tab: an axis left out stays as it is; an In Line with Text object floats with Square wrapping)"#)
+            .when(has_movable),
         CommandSpec::new("arrange.bringForward", "Bring Forward", "Layout › Arrange", |s, _| with_float(s, |f| f.wrap = Wrap::InFrontOfText)).when(has_movable),
         CommandSpec::new("arrange.sendBackward", "Send Backward", "Layout › Arrange", |s, _| with_float(s, |f| f.wrap = Wrap::BehindText)).when(has_movable),
         CommandSpec::new("arrange.align", "Align", "Layout › Arrange", |s, v| {
@@ -892,6 +895,77 @@ fn unalign(s: &mut Session) -> Result<(), CmdError> {
         }
     })?;
     Ok(())
+}
+
+/// One axis of the Layout dialog's Position tab: what it is relative to, and an alignment or an
+/// offset (points).
+type AxisPosition = (wordcraft_doc::para::Anchor, Option<wordcraft_doc::para::FloatAlign>, f32);
+
+/// The `horizontal` (`across`) or `vertical` part of `arrange.positionOptions`; None if left out.
+fn axis_position(v: &Value, across: bool) -> Result<Option<AxisPosition>, CmdError> {
+    use wordcraft_doc::para::{Anchor, FloatAlign};
+    let (key, off) = if across { ("horizontal", "x") } else { ("vertical", "y") };
+    let Some(a) = v.get(key).filter(|a| !a.is_null()) else { return Ok(None) };
+    if !a.is_object() {
+        return Err(CmdError::Params(format!("`{key}` must be an object")));
+    }
+    let rel = p::str(a, "relativeTo").unwrap_or("margin");
+    let anchor = match (rel, across) {
+        ("margin", _) => Anchor::Margin,
+        ("page", _) => Anchor::Page,
+        ("insideMargin", _) => Anchor::InsideMargin,
+        ("outsideMargin", _) => Anchor::OutsideMargin,
+        ("column", true) => Anchor::Column,
+        ("leftMargin", true) => Anchor::LeftMargin,
+        ("rightMargin", true) => Anchor::RightMargin,
+        ("paragraph", false) => Anchor::Paragraph,
+        ("topMargin", false) => Anchor::TopMargin,
+        ("bottomMargin", false) => Anchor::BottomMargin,
+        _ => return Err(CmdError::Params(format!("`{key}.relativeTo` can't be `{rel}`"))),
+    };
+    match (a.get("align"), a.get(off)) {
+        (Some(_), Some(_)) => Err(CmdError::Params(format!("`{key}`: `align` or `{off}`, not both"))),
+        (Some(al), None) => {
+            let align = match (al.as_str().unwrap_or(""), across) {
+                ("left", true) | ("top", false) => FloatAlign::Start,
+                ("center", _) => FloatAlign::Center,
+                ("right", true) | ("bottom", false) => FloatAlign::End,
+                ("inside", _) => FloatAlign::Inside,
+                ("outside", _) => FloatAlign::Outside,
+                _ => return Err(CmdError::Params(format!("bad `{key}.align`"))),
+            };
+            // A paragraph has no height to align in.
+            if anchor == Anchor::Paragraph {
+                return Err(CmdError::Params("an object can't be aligned relative to its paragraph; give `y`".into()));
+            }
+            Ok(Some((anchor, Some(align), 0.0)))
+        }
+        (None, Some(_)) => {
+            let at = p::f32(a, off).ok_or_else(|| CmdError::Params(format!("`{key}.{off}` must be a number")))?;
+            Ok(Some((anchor, None, at.clamp(-MAX_OFFSET, MAX_OFFSET))))
+        }
+        (None, None) => Err(CmdError::Params(format!("`{key}` needs `align` or `{off}`"))),
+    }
+}
+
+/// Layout dialog › Position: each axis given gets its alignment or offset and what it is relative
+/// to, in one undo step.
+fn position_options(s: &mut Session, v: &Value) -> CmdResult {
+    let (across, down) = (axis_position(v, true)?, axis_position(v, false)?);
+    if across.is_none() && down.is_none() {
+        return Err(CmdError::Params("`horizontal` or `vertical` is required".into()));
+    }
+    with_float(s, |f| {
+        if f.wrap == Wrap::Inline {
+            f.wrap = Wrap::Square;
+        }
+        if let Some((rel, align, x)) = across {
+            (f.h_rel, f.h_align, f.x) = (rel, align, x);
+        }
+        if let Some((rel, align, y)) = down {
+            (f.v_rel, f.v_align, f.y) = (rel, align, y);
+        }
+    })
 }
 
 /// Whether a floating object moves with its text (Word's "Move with Text"): its vertical position
@@ -2374,6 +2448,57 @@ mod tests {
 
     fn near(a: [f32; 4], b: [f32; 4]) -> bool {
         a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.5)
+    }
+
+    /// Layout dialog › Position: an exact offset or an alignment per axis, relative to the page,
+    /// the margin or the text; bad combinations are refused and each change is one undo step.
+    #[test]
+    fn position_options_place_by_offset_or_alignment() {
+        let mut s = Session::new(wordcraft_doc::Document::new());
+        s.run("document.setText", &json!({"text": "one\ntwo\nthree"})).unwrap();
+        s.sel = Selection::caret(s.doc.start_of(StoryRef::Body));
+        s.run("insert.shape", &json!({"kind": "rectangle", "width": 100, "height": 50})).unwrap();
+        let sect = super::super::page::sect(&s);
+        let pos = selected(&s).unwrap().0;
+        let at = |x: f32, y: f32| json!({"horizontal": {"x": x, "relativeTo": "page"}, "vertical": {"y": y, "relativeTo": "page"}});
+        s.run("arrange.positionOptions", &at(72.0, 144.0)).unwrap();
+        assert!(near(rect_of(&mut s, &pos), [72.0, 144.0, 100.0, 50.0]), "{:?}", rect_of(&mut s, &pos));
+        // Centred on the page across, at the margin's bottom down.
+        let both = json!({"horizontal": {"align": "center", "relativeTo": "page"}, "vertical": {"align": "bottom"}});
+        s.run("arrange.positionOptions", &both).unwrap();
+        let bottom = sect.margin_top + sect.text_height() - 50.0;
+        assert!(near(rect_of(&mut s, &pos), [(sect.page_w - 100.0) / 2.0, bottom, 100.0, 50.0]), "{:?}", rect_of(&mut s, &pos));
+        let f = selected(&s).unwrap().1.frame().unwrap().2.clone();
+        assert_eq!(
+            (f.h_rel, f.h_align, f.v_rel),
+            (wordcraft_doc::para::Anchor::Page, Some(wordcraft_doc::para::FloatAlign::Center), wordcraft_doc::para::Anchor::Margin)
+        );
+        // One axis alone leaves the other where it is; the text's own anchors work too.
+        s.run("arrange.positionOptions", &json!({"vertical": {"y": 10, "relativeTo": "paragraph"}})).unwrap();
+        let r = rect_of(&mut s, &pos);
+        assert!((r[0] - (sect.page_w - 100.0) / 2.0).abs() < 0.5 && r[1] < bottom, "{r:?}");
+        // Undo is one step per command.
+        s.run("edit.undo", &json!({})).unwrap();
+        assert!(near(rect_of(&mut s, &pos), [(sect.page_w - 100.0) / 2.0, bottom, 100.0, 50.0]));
+        // A typed offset past the limit is held at it; nonsense is refused and changes nothing.
+        s.run("arrange.positionOptions", &json!({"horizontal": {"x": 1.0e9}})).unwrap();
+        assert_eq!(selected(&s).unwrap().1.frame().unwrap().2.x, MAX_OFFSET);
+        for bad in [
+            json!({}),
+            json!({"horizontal": 5}),
+            json!({"horizontal": {"relativeTo": "page"}}),
+            json!({"horizontal": {"align": "left", "x": 3}}),
+            json!({"horizontal": {"align": "top"}}),
+            json!({"horizontal": {"x": "far"}}),
+            json!({"horizontal": {"x": 3, "relativeTo": "paragraph"}}),
+            json!({"vertical": {"y": 3, "relativeTo": "column"}}),
+            json!({"vertical": {"align": "top", "relativeTo": "paragraph"}}),
+            json!({"vertical": {"y": 3, "relativeTo": "character"}}),
+        ] {
+            let before = selected(&s).unwrap().1;
+            assert!(s.run("arrange.positionOptions", &bad).is_err(), "{bad}");
+            assert_eq!(selected(&s).unwrap().1, before, "{bad}");
+        }
     }
 
     /// Two floating shapes, Shift+clicked together and grouped: one object that moves as one with
