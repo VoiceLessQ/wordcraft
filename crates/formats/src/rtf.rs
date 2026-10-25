@@ -271,7 +271,9 @@ impl Writer {
         // leaks the reader's NTLM credentials.
         match f.link.as_deref().filter(|l| wordcraft_doc::link::is_safe_href(l)) {
             Some(l) => {
-                out.push_str(&format!("{{\\field{{\\*\\fldinst{{HYPERLINK \"{}\"}}}}{{\\fldrslt{{{}}}}}}}", esc(&l.replace('"', "%22")), body));
+                // In a field's quotes `\\` is one backslash; a quote is stored as `%22`.
+                let target = l.replace('\\', "\\\\").replace('"', "%22");
+                out.push_str(&format!("{{\\field{{\\*\\fldinst{{HYPERLINK \"{}\"}}}}{{\\fldrslt{{{}}}}}}}", esc(&target), body));
             }
             None => out.push_str(&body),
         }
@@ -4309,6 +4311,23 @@ mod tests {
         let exported = export(&d);
         assert!(exported.contains("x%22y"), "{exported}");
         assert_eq!(link(&import(exported.as_bytes()).unwrap()).as_deref(), Some(r#"http://a.b/x"y"#));
+    }
+
+    /// Backslashes in a link survive export and import, a trailing one and two in a row too.
+    #[test]
+    fn backslashes_in_a_link_round_trip() {
+        let link = |d: &Document| d.body.iter().find_map(|b| b.as_para()?.runs.iter().find_map(|r| r.props.link.clone()));
+        for target in [r"docs\", r"a\\b", r"..\up\f.doc"] {
+            let mut d = import(br#"{\rtf1\ansi{\field{\*\fldinst{HYPERLINK "x"}}{\fldrslt{link}}}\par}"#).unwrap();
+            for b in d.body.iter_mut() {
+                if let wordcraft_doc::Block::Para(p) = std::sync::Arc::make_mut(b) {
+                    p.runs.iter_mut().filter(|r| r.props.link.is_some()).for_each(|r| r.props.link = Some(target.into()));
+                }
+            }
+            assert_eq!(link(&d).as_deref(), Some(target));
+            let exported = export(&d);
+            assert_eq!(link(&import(exported.as_bytes()).unwrap()).as_deref(), Some(target), "{exported}");
+        }
     }
 
     #[test]
