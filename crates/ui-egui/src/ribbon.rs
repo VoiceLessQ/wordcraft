@@ -1856,7 +1856,7 @@ fn layout(app: &mut WordApp, ui: &mut Ui) {
         });
     });
     group(ui, "Arrange", None, app, |ui, app| {
-        big(ui, app, "position", "Position", "arrange.position", json!({}), false);
+        position_menu(ui, app);
         wrap_menu(ui, app);
         stack(ui, |ui| {
             small(ui, app, "bringForward", Some("Bring Forward"), "Bring Forward", "arrange.bringForward", json!({}), false);
@@ -1933,6 +1933,30 @@ fn group_menu(ui: &mut Ui, app: &mut WordApp, label: Option<&str>) {
     menu_button(ui, app, "group", label, "Group", false, "arrange.group", |ui, app| {
         mi(ui, app, "Group", "arrange.group", json!({}));
         mi(ui, app, "Ungroup", "arrange.ungroup", json!({}));
+    });
+}
+
+/// Arrange › Position: In Line with Text, nine places on the page with Square wrapping, and the
+/// Layout dialog for an exact position.
+fn position_menu(ui: &mut Ui, app: &mut WordApp) {
+    menu_button(ui, app, "position", Some("Position"), "Position", true, "arrange.position", |ui, app| {
+        mi(ui, app, "In Line with Text", "arrange.wrap", json!({"wrap": "inline"}));
+        ui.separator();
+        for (l, p) in [
+            ("Top Left", "topLeft"),
+            ("Top Center", "topCenter"),
+            ("Top Right", "topRight"),
+            ("Middle Left", "middleLeft"),
+            ("Middle Center", "middleCenter"),
+            ("Middle Right", "middleRight"),
+            ("Bottom Left", "bottomLeft"),
+            ("Bottom Center", "bottomCenter"),
+            ("Bottom Right", "bottomRight"),
+        ] {
+            mi(ui, app, l, "arrange.position", json!({"preset": p}));
+        }
+        ui.separator();
+        mi(ui, app, "More Layout Options…", "arrange.positionOptions", json!({}));
     });
 }
 
@@ -2639,7 +2663,7 @@ fn shape_format(app: &mut WordApp, ui: &mut Ui) {
     });
     shape_text_group(app, ui);
     group(ui, "Arrange", None, app, |ui, app| {
-        big(ui, app, "position", "Position", "arrange.position", json!({}), false);
+        position_menu(ui, app);
         wrap_menu(ui, app);
         stack(ui, |ui| {
             rotate_menu(ui, app, Some("Rotate"));
@@ -2815,7 +2839,7 @@ fn picture_format(app: &mut WordApp, ui: &mut Ui) {
     });
     alt_text_group(ui, app);
     group(ui, "Arrange", None, app, |ui, app| {
-        big(ui, app, "position", "Position", "arrange.position", json!({}), false);
+        position_menu(ui, app);
         wrap_menu(ui, app);
         stack(ui, |ui| {
             rotate_menu(ui, app, Some("Rotate"));
