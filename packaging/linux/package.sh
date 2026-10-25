@@ -131,7 +131,6 @@ if has appimage; then
   }
   APPDIR="$WORK/WordCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
-  mv "$APPDIR/usr/share/doc" "$WORK/doc-unused"
   # Starts the app, or wordcraft-cli after `--cli` (the MCP server for AI apps).
   install -m755 "$HERE/AppRun" "$APPDIR/AppRun"
   cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
