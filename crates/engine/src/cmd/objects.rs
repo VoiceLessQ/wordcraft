@@ -1059,6 +1059,7 @@ fn align(s: &mut Session, v: &Value) -> CmdResult {
                 f.y = (f.y + d).clamp(-MAX_OFFSET, MAX_OFFSET);
             }
         })?;
+        s.touch(); // lay out again before the next object reads its frame
     }
     let objects: Vec<Value> = picked.iter().map(super::pos_json).collect();
     Ok(json!({"aligned": objects}))
@@ -2677,6 +2678,33 @@ mod tests {
         let before: Vec<InlineObject> = all_objects(&s).into_iter().map(|(_, o)| o).collect();
         assert!(s.run("arrange.align", &json!({"value": "left"})).is_err());
         assert_eq!(all_objects(&s).into_iter().map(|(_, o)| o).collect::<Vec<_>>(), before, "nothing moved");
+    }
+
+    /// Moving the first shape pushes the text down, and the second shape moves with that text:
+    /// it still lands on the line, measured after the first one moved.
+    #[test]
+    fn align_measures_each_object_after_the_last_one_moved() {
+        let mut s = Session::new(wordcraft_doc::Document::new());
+        s.run("document.setText", &json!({"text": "one\ntwo\nthree\nfour\nfive"})).unwrap();
+        let sect = super::super::page::sect(&s);
+        s.run("select.text", &json!({"text": "four"})).unwrap();
+        s.run("select.collapse", &json!({"end": true})).unwrap();
+        s.run("insert.shape", &json!({"kind": "ellipse", "width": 60, "height": 40})).unwrap();
+        s.run("arrange.wrap", &json!({"wrap": "inFrontOfText"})).unwrap();
+        s.run("arrange.positionOptions", &json!({"horizontal": {"x": 300, "relativeTo": "page"}, "vertical": {"y": 200, "relativeTo": "paragraph"}}))
+            .unwrap();
+        // The first shape is picked first, so it moves first.
+        s.sel = Selection::caret(s.doc.start_of(StoryRef::Body));
+        s.run("insert.shape", &json!({"kind": "rectangle", "width": 100, "height": 80})).unwrap();
+        s.run("arrange.wrap", &json!({"wrap": "topAndBottom"})).unwrap();
+        s.run("arrange.positionOptions", &json!({"horizontal": {"x": 100, "relativeTo": "page"}, "vertical": {"y": 500, "relativeTo": "page"}}))
+            .unwrap();
+        s.run("select.addObject", &json!({"index": 1})).unwrap();
+        let picked = picked_objects(&s);
+        assert_eq!(picked.len(), 2);
+        s.run("arrange.align", &json!({"value": "top", "to": "margin"})).unwrap();
+        let tops: Vec<f32> = picked.iter().map(|p| rect_of(&mut s, p)[1]).collect();
+        assert!(tops.iter().all(|t| (t - sect.margin_top).abs() < 0.5), "{tops:?}");
     }
 
     /// Two floating shapes, Shift+clicked together and grouped: one object that moves as one with
