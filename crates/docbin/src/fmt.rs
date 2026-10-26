@@ -485,6 +485,10 @@ fn style_chain(raw: &[crate::stsh::RawStyle], istd: usize) -> Vec<usize> {
 /// The style-id form of a stored (lower-case) built-in name, matching the docx reader's ids.
 pub(crate) fn style_id(name: &str) -> String {
     let lower = name.trim().to_ascii_lowercase();
+    // Word's ids for the TOC levels, which References › Update Table gives its entries.
+    if let Some(n) = toc_level(&lower) {
+        return format!("TOC{n}");
+    }
     match lower.as_str() {
         "normal" => "Normal".into(),
         "title" => "Title".into(),
@@ -522,11 +526,19 @@ fn heading_level(name: &str) -> u8 {
     lower.strip_prefix("heading ").and_then(|d| d.parse().ok()).filter(|&l: &u8| (1..=9).contains(&l)).unwrap_or(0)
 }
 
+/// "toc 2" → 2; `None` when not a table of contents level.
+fn toc_level(lower: &str) -> Option<u8> {
+    lower.strip_prefix("toc ").and_then(|d| d.parse().ok()).filter(|l: &u8| (1..=9).contains(l))
+}
+
 fn display_name(name: &str) -> String {
     let lower = name.trim().to_ascii_lowercase();
     let h = heading_level(&lower);
     if h > 0 {
         return format!("Heading {h}");
+    }
+    if let Some(n) = toc_level(&lower) {
+        return format!("TOC {n}");
     }
     match lower.as_str() {
         "body text" => "Body Text".into(),

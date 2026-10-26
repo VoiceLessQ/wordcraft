@@ -677,6 +677,29 @@ fn paragraph_props_and_heading_style() {
     assert_eq!(p1.props.style.as_deref(), Some("Normal"));
 }
 
+/// The TOC level styles get Word's ids (`TOC1`), the ones References › Update Table gives its
+/// entries; with `TOC 1` the rebuilt entries lost the document's TOC formatting.
+#[test]
+fn toc_styles_take_words_ids() {
+    let spec = RichSpec {
+        text: "Intro\rPart\r",
+        styles: vec![
+            (1, 0x0FFF, "Normal", Vec::new(), Vec::new()),
+            (1, 0, "toc 1", grpprl(&[(0x2461, &[0x01, 0x00])]), Vec::new()),
+            (1, 1, "toc 2", Vec::new(), Vec::new()),
+        ],
+        fonts: vec!["Times New Roman"],
+        chpx_runs: vec![(0, Vec::new())],
+        papx_entries: vec![(0, 1, Vec::new()), (6, 2, Vec::new())],
+    };
+    let doc = read(&rich_doc(&spec)).expect("opens");
+    let ids: Vec<(&str, &str, Option<&str>)> =
+        doc.styles.styles.iter().filter(|s| s.name.starts_with("TOC")).map(|s| (s.id.as_str(), s.name.as_str(), s.based_on.as_deref())).collect();
+    assert_eq!(ids, [("TOC1", "TOC 1", Some("Normal")), ("TOC2", "TOC 2", Some("TOC1"))]);
+    let styles: Vec<Option<&str>> = doc.body.iter().filter_map(|b| b.as_para()).map(|p| p.props.style.as_deref()).collect();
+    assert_eq!(styles, [Some("TOC1"), Some("TOC2")]);
+}
+
 /// #534: Chinese theses set a first-line indent of two characters (`sprmPDxaLeft1`, whose operand
 /// is two bytes, plus `sprmPDxcLeft1` in hundredths of a character), and exact line spacing as a
 /// negative LSPD `dyaLine`. Both were lost: the indent read as four bytes, and exact 20pt as
