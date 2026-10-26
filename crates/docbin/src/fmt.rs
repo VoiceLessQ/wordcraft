@@ -2,7 +2,8 @@
 
 use wordcraft_doc::Rgb;
 use wordcraft_doc::props::{
-    Align, Border, BorderStyle, Borders, CharProps, Highlight, LineSpacing, ParaProps, TabAlign, TabLeader, TabStop, TextColor, Underline, VertAlign,
+    Align, Border, BorderStyle, Borders, CharProps, Highlight, LineSpacing, NumRef, ParaProps, TabAlign, TabLeader, TabStop, TextColor, Underline,
+    VertAlign,
 };
 use wordcraft_doc::styles::{Style, StyleKind, StyleSheet};
 
@@ -563,9 +564,27 @@ fn apply_chain(chr: &mut CharProps, grpprl: &[u8], fonts: &[String]) {
 
 /// Apply a grpprl of paragraph sprms.
 fn apply_chain_para(para: &mut ParaProps, grpprl: &[u8]) {
+    let (mut ilfo, mut ilvl) = (None, None);
     for prl in sprm::iter(grpprl) {
-        if prl.sgc() == 1 {
-            apply_para(para, &prl);
+        match prl.op {
+            crate::P_ILFO => ilfo = Some(crate::ilfo_operand(prl.operand)),
+            crate::P_ILVL => ilvl = Some(crate::ilvl_operand(prl.operand)),
+            _ if prl.sgc() == 1 => apply_para(para, &prl),
+            _ => {}
         }
+    }
+    // A list style ("List Number", a numbered paragraph style): its paragraphs are numbered
+    // without a list of their own. A style based on it may change the level or end the list.
+    match (ilfo, &mut para.numbering) {
+        (Some(ilfo), n) => {
+            let level = ilvl.or(n.map(|n| n.level)).unwrap_or(0);
+            *n = match crate::num_of(ilfo) {
+                Some(num) => Some(NumRef { num, level }),
+                // Ending the based-on style's list is `num: 0`: no value would inherit it.
+                None => n.map(|_| NumRef { num: 0, level }),
+            };
+        }
+        (None, Some(n)) => n.level = ilvl.unwrap_or(n.level),
+        (None, None) => {}
     }
 }

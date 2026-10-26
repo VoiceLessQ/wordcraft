@@ -703,6 +703,44 @@ fn toc_styles_take_words_ids() {
     assert_eq!(styles, [Some("TOC1"), Some("TOC2")]);
 }
 
+/// A list style numbers its paragraphs without a list of their own. Its `sprmPIlfo` was read
+/// only from paragraphs, so the numbers and bullets of "Numbered Paragraph"-style documents were
+/// lost. Ending the list (in a based-on style or a paragraph) is `num: 0`; `ilfo 0` on a
+/// paragraph whose style has no list keeps nothing, so its indents stay.
+#[test]
+fn list_styles_number_their_paragraphs() {
+    use wordcraft_doc::props::NumRef;
+    let ilfo = |n: i16| n.to_le_bytes();
+    let spec = RichSpec {
+        text: "a\rb\rc\rd\re\r",
+        styles: vec![
+            (1, 0x0FFF, "Normal", Vec::new(), Vec::new()),
+            (1, 0, "List Number", grpprl(&[(0x460B, &ilfo(1)), (0x260A, &[0])]), Vec::new()),
+            (1, 1, "List Number Extra", grpprl(&[(0x460B, &ilfo(0))]), Vec::new()),
+            (1, 0, "Body", Vec::new(), Vec::new()),
+        ],
+        fonts: vec!["Times New Roman"],
+        chpx_runs: vec![(0, Vec::new())],
+        papx_entries: vec![
+            (0, 1, Vec::new()),
+            (2, 2, Vec::new()),
+            (4, 1, grpprl(&[(0x460B, &ilfo(0))])),
+            (6, 3, grpprl(&[(0x460B, &ilfo(0))])),
+            (8, 1, grpprl(&[(0x260A, &[2])])),
+        ],
+    };
+    let doc = read(&rich_doc(&spec)).expect("opens");
+    let style = |id: &str| doc.styles.get(id).and_then(|s| s.para.numbering);
+    assert_eq!(style("List Number"), Some(NumRef { num: 1, level: 0 }));
+    assert_eq!(style("List Number Extra"), Some(NumRef { num: 0, level: 0 }), "ends the based-on list");
+    let paras: Vec<_> = doc.body.iter().filter_map(|b| b.as_para()).collect();
+    let own: Vec<Option<NumRef>> = paras.iter().map(|p| p.props.numbering).collect();
+    assert_eq!(own, [None, None, Some(NumRef { num: 0, level: 0 }), None, Some(NumRef { num: 1, level: 2 })]);
+    let shown: Vec<Option<u32>> =
+        paras.iter().map(|p| p.props.numbering.or(doc.styles.resolve_para(&p.props).numbering).filter(|n| n.num != 0).map(|n| n.num)).collect();
+    assert_eq!(shown, [Some(1), None, None, None, Some(1)]);
+}
+
 /// #534: Chinese theses set a first-line indent of two characters (`sprmPDxaLeft1`, whose operand
 /// is two bytes, plus `sprmPDxcLeft1` in hundredths of a character), and exact line spacing as a
 /// negative LSPD `dyaLine`. Both were lost: the indent read as four bytes, and exact 20pt as

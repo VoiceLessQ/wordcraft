@@ -542,27 +542,31 @@ fn walk<'a>(ctx: &WalkCtx<'a>, cp_start: u32, cp_end: u32, pics: &mut media::Pic
                 }
                 let mut row = table::decode(papx);
                 row.cell_mark = c == '\u{7}';
-                let mut ilvl = 0u8;
-                let mut ilfo = 0i32;
+                let mut ilvl: Option<u8> = None;
+                let mut ilfo: Option<i32> = None;
                 for prl in sprm::iter(papx) {
                     if prl.op == P_ILVL {
-                        ilvl = prl.operand.first().copied().unwrap_or(0).min(8);
+                        ilvl = Some(ilvl_operand(prl.operand));
                         continue;
                     }
                     if prl.op == P_ILFO {
-                        ilfo = match prl.operand {
-                            [b0, b1, ..] => i16::from_le_bytes([*b0, *b1]) as i32,
-                            _ => 0,
-                        };
+                        ilfo = Some(ilfo_operand(prl.operand));
                         continue;
                     }
                     if prl.sgc() == 1 {
                         fmt::apply_para(&mut pb.props, &prl);
                     }
                 }
-                if let Some(num) = num_of(ilfo) {
-                    pb.props.numbering = Some(NumRef { num, level: ilvl });
-                }
+                // The paragraph's own list, or its style's list at its own level. Switching the
+                // style's list off is `num: 0`, which also drops the style's indents, so only a
+                // style that has a list gets it.
+                let style_list = pb.props.style.as_deref().and_then(|id| ctx.sheet.get(id)).and_then(|s| s.para.numbering).filter(|n| n.num != 0);
+                pb.props.numbering = match (ilfo.map(num_of), style_list) {
+                    (Some(Some(num)), _) => Some(NumRef { num, level: ilvl.or(style_list.map(|n| n.level)).unwrap_or(0) }),
+                    (Some(None), Some(s)) => Some(NumRef { num: 0, level: s.level }),
+                    (None, Some(s)) => ilvl.map(|level| NumRef { num: s.num, level }),
+                    _ => None,
+                };
                 let fc = ctx.pieces.fc_of_cp(cp).unwrap_or(0);
                 pb.mark = char_props(ctx.chpx_bins.chpx(ctx.word, fc), ctx.fonts, &CharProps::default());
                 let done = std::mem::take(&mut pb);
@@ -877,6 +881,19 @@ fn symbol_operand(chpx: &[u8]) -> Option<(u16, u16)> {
         }
     }
     None
+}
+
+/// `sprmPIlvl` operand: the list level, 0-8.
+fn ilvl_operand(operand: &[u8]) -> u8 {
+    operand.first().copied().unwrap_or(0).min(8)
+}
+
+/// `sprmPIlfo` operand: the signed 16-bit LFO reference that [`num_of`] reads.
+fn ilfo_operand(operand: &[u8]) -> i32 {
+    match operand {
+        [b0, b1, ..] => i16::from_le_bytes([*b0, *b1]) as i32,
+        _ => 0,
+    }
 }
 
 /// `sprmPIlfo` operand (a signed 16-bit value, [MS-DOC] §2.6.2) → the num id, if the
