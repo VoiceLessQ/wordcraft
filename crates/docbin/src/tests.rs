@@ -532,6 +532,8 @@ struct RichExtra {
     prm: u16,
     alt_fonts: Vec<Option<&'static str>>,
     style_next: Vec<u16>,
+    /// Built-in style indexes (`sti`), parallel to `RichSpec::styles`; none means user-made.
+    style_sti: Vec<u16>,
 }
 
 fn rich_doc(spec: &RichSpec) -> Vec<u8> {
@@ -569,7 +571,14 @@ fn rich_doc_with(spec: &RichSpec, extra: &RichExtra) -> Vec<u8> {
         .styles
         .iter()
         .enumerate()
-        .map(|(i, s)| std_bytes_next(s.0, s.1, extra.style_next.get(i).copied().unwrap_or(0x0FFF), s.2, &s.3, &s.4))
+        .map(|(i, s)| {
+            let mut std = std_bytes_next(s.0, s.1, extra.style_next.get(i).copied().unwrap_or(0x0FFF), s.2, &s.3, &s.4);
+            if let Some(sti) = extra.style_sti.get(i) {
+                // After the record's cbStd: sti(12) and flags.
+                std[2..4].copy_from_slice(&sti.to_le_bytes());
+            }
+            std
+        })
         .collect();
     let stsh = stsh_bytes(&styles);
     let fonts: Vec<(&str, Option<&str>)> = spec.fonts.iter().enumerate().map(|(i, n)| (*n, extra.alt_fonts.get(i).copied().flatten())).collect();
@@ -739,6 +748,30 @@ fn list_styles_number_their_paragraphs() {
     let shown: Vec<Option<u32>> =
         paras.iter().map(|p| p.props.numbering.or(doc.styles.resolve_para(&p.props).numbering).filter(|n| n.num != 0).map(|n| n.num)).collect();
     assert_eq!(shown, [Some(1), None, None, None, Some(1)]);
+}
+
+/// Word's built-in styles (`sti` below istiUser) are built in, and with no quick-style flag
+/// read the Home › Styles gallery shows Word's usual set, as for a DOCX file without
+/// `w:qFormat`. The gallery was empty for every .doc file.
+#[test]
+fn built_in_styles_fill_the_styles_gallery() {
+    let spec = RichSpec {
+        text: "a\r",
+        styles: vec![
+            (1, 0x0FFF, "Normal", Vec::new(), Vec::new()),
+            (1, 0, "heading 1", Vec::new(), Vec::new()),
+            (1, 0, "Report Body", Vec::new(), Vec::new()),
+        ],
+        fonts: vec!["Times New Roman"],
+        chpx_runs: vec![(0, Vec::new())],
+        papx_entries: vec![(0, 0, Vec::new())],
+    };
+    let extra = RichExtra { style_sti: vec![0, 1, 0x0FFE], ..Default::default() };
+    let doc = read(&rich_doc_with(&spec, &extra)).expect("opens");
+    let st = |id: &str| doc.styles.get(id).cloned().expect(id);
+    assert!(st("Normal").builtin && st("Heading1").builtin && !st("Report Body").builtin);
+    assert!(st("Normal").quick && st("Heading1").quick, "Word's usual gallery");
+    assert!(!st("Report Body").quick);
 }
 
 /// #534: Chinese theses set a first-line indent of two characters (`sprmPDxaLeft1`, whose operand

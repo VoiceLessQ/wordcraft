@@ -248,6 +248,17 @@ pub fn read_with_password(bytes: &[u8], password: Option<&str>) -> Result<Docume
     }
     doc.body.clear();
     doc.styles = fmt::stylesheet(&raw_styles, &fonts);
+    // Word's built-in styles (`sti` below istiUser) are built in here too, and with no quick
+    // flag read the Home › Styles gallery shows Word's usual set, as the DOCX reader does.
+    for raw in raw_styles.iter().filter(|r| !r.name.is_empty() && r.sti < stsh::STI_USER) {
+        let id = fmt::style_id(&raw.name);
+        if let Some(st) = doc.styles.styles.iter_mut().find(|s| s.id == id) {
+            st.builtin = true;
+        }
+    }
+    if !doc.styles.styles.iter().any(|s| s.quick) {
+        doc.styles.add_default_gallery();
+    }
     doc.numbering = list::parse(&table, &fib, &fonts);
     let sheet: StyleSheet = doc.styles.clone();
     let sects = sections::parse(&word, &table, &fib);
