@@ -278,6 +278,7 @@ pub fn read_with_password(bytes: &[u8], password: Option<&str>) -> Result<Docume
         raw_styles: &raw_styles,
         sheet: &sheet,
         notes: &[],
+        own_note: None,
         marks: &[],
         drawn: &[],
         sect_ends: &[],
@@ -337,20 +338,27 @@ pub fn read_with_password(bytes: &[u8], password: Option<&str>) -> Result<Docume
     // Footnote and endnote stories: each text range becomes a part; the reference CPs then
     // link to the part ids during the main walk.
     let mut note_links: Vec<(u32, NoteKind, u32)> = Vec::new();
-    for (cp, ab) in notes::parse_notes(&table, &fib, fib::pair::PLCF_FND_REF, fib::pair::PLCF_FND_TXT) {
-        let Some((a, b)) = story(ftn_base, fib.ccp.ftn, ab) else { continue };
-        let blocks = table::assemble(walk(&ctx, a, b, &mut pics));
-        if !blocks.is_empty() && doc.parts.len() < MAX_PARTS {
-            let id = doc.add_part(PartKind::Footnote, blocks);
-            note_links.push((cp, NoteKind::Footnote, id));
-        }
-    }
-    for (cp, ab) in notes::parse_notes(&table, &fib, fib::pair::PLCF_END_REF, fib::pair::PLCF_END_TXT) {
-        let Some((a, b)) = story(edn_base, fib.ccp.edn, ab) else { continue };
-        let blocks = table::assemble(walk(&ctx, a, b, &mut pics));
-        if !blocks.is_empty() && doc.parts.len() < MAX_PARTS {
-            let id = doc.add_part(PartKind::Endnote, blocks);
-            note_links.push((cp, NoteKind::Endnote, id));
+    let note_kinds = [
+        (fib::pair::PLCF_FND_REF, fib::pair::PLCF_FND_TXT, ftn_base, fib.ccp.ftn, NoteKind::Footnote, PartKind::Footnote),
+        (fib::pair::PLCF_END_REF, fib::pair::PLCF_END_TXT, edn_base, fib.ccp.edn, NoteKind::Endnote, PartKind::Endnote),
+    ];
+    for (ref_pair, txt_pair, base, len, kind, part_kind) in note_kinds {
+        for (cp, ab) in notes::parse_notes(&table, &fib, ref_pair, txt_pair) {
+            let Some((a, b)) = story(base, len, ab) else { continue };
+            if doc.parts.len() >= MAX_PARTS {
+                continue;
+            }
+            // The part's id first, so the note's own number in its text can name it.
+            let Ok(id) = doc.try_add_part(part_kind, Vec::new()) else { continue };
+            let blocks = table::assemble(walk(&WalkCtx { own_note: Some((kind, id)), ..ctx }, a, b, &mut pics));
+            if blocks.is_empty() {
+                doc.parts.remove(&id);
+                continue;
+            }
+            if let Some(part) = doc.parts.get_mut(&id) {
+                part.blocks = blocks;
+            }
+            note_links.push((cp, kind, id));
         }
     }
     // Sorted so the main walk finds each reference by binary search.
@@ -417,6 +425,8 @@ struct WalkCtx<'a> {
     sheet: &'a StyleSheet,
     /// (reference CP in the main document, kind, part id) for notes.
     notes: &'a [(u32, NoteKind, u32)],
+    /// The note whose text is being walked: its reference character is the note's own number.
+    own_note: Option<(NoteKind, u32)>,
     /// Bookmark boundaries (main-document CPs), sorted for a sequential walk.
     marks: &'a [(u32, notes::Mark)],
     /// Floating shapes and pictures by anchor CP (absolute), sorted.
@@ -658,11 +668,13 @@ fn walk<'a>(ctx: &WalkCtx<'a>, cp_start: u32, cp_end: u32, pics: &mut media::Pic
                 }
             }
             '\u{2}' => {
-                // Footnote or endnote reference; custom symbols share the same character.
+                // Footnote or endnote reference; custom symbols share the same character. In a
+                // note's own text it is that note's number, as `w:footnoteRef` is in DOCX.
                 let at = ctx.notes.partition_point(|(c, _, _)| *c < cp);
-                if let Some((_, kind, id)) = ctx.notes.get(at).filter(|(c, _, _)| *c == cp) {
+                let note = ctx.notes.get(at).filter(|(c, _, _)| *c == cp).map(|&(_, kind, id)| (kind, id)).or(ctx.own_note);
+                if let Some((kind, id)) = note {
                     pb.push('\u{FFFC}', CharProps::default());
-                    pb.objects.push(InlineObject::NoteRef { kind: *kind, id: *id, custom: String::new() });
+                    pb.objects.push(InlineObject::NoteRef { kind, id, custom: String::new() });
                 }
             }
             '\t' => push_formatted(&mut pb, cp, '\t', ctx, fields.last_mut(), &mut memo),

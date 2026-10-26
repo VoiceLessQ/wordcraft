@@ -1334,6 +1334,44 @@ fn footnote_reference_links_story_part() {
     assert_eq!(part.kind, wordcraft_doc::PartKind::Footnote);
 }
 
+/// A note's text starts with its own reference character, which Word draws as the note's
+/// number. It was dropped (only body references were matched), so the note text at the foot of
+/// the page had no number; now it is the note's own number, as `w:footnoteRef` is in DOCX.
+#[test]
+fn a_note_text_starts_with_its_own_number() {
+    use wordcraft_doc::para::{InlineObject, NoteKind};
+    let text = "A\u{2} b\u{2}\r";
+    let ccp = text.chars().count() as u32;
+    let spec = StructSpec {
+        text,
+        note_stories: vec!["\u{2} Note body\r"],
+        endnote_stories: vec!["\u{2} End\r"],
+        extra_pairs: vec![
+            (2, plc(&[1, ccp], &1u16.to_le_bytes())),
+            (3, plc(&[0, 12], &[])),
+            (46, plc(&[4, ccp], &1u16.to_le_bytes())),
+            (47, plc(&[0, 6], &[])),
+        ],
+        ..structured_spec(text, ccp)
+    };
+    let doc = read(&struct_doc(&spec)).expect("opens");
+    let p0 = doc.body.first().and_then(|b| b.as_para()).expect("para");
+    let refs: Vec<(NoteKind, u32)> = p0
+        .objects
+        .iter()
+        .filter_map(|o| match o {
+            InlineObject::NoteRef { kind, id, .. } => Some((*kind, *id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refs.iter().map(|r| r.0).collect::<Vec<_>>(), [NoteKind::Footnote, NoteKind::Endnote]);
+    for (kind, id) in refs {
+        let first = doc.parts.get(&id).and_then(|p| p.blocks.first()).and_then(|b| b.as_para()).expect("note text");
+        assert!(first.text.starts_with('\u{FFFC}'), "{:?}", first.text);
+        assert!(matches!(first.objects.first(), Some(InlineObject::NoteRef { kind: k, id: i, .. }) if *k == kind && *i == id), "{:?}", first.objects);
+    }
+}
+
 #[test]
 fn endnote_reference_links_story_part() {
     let text = "Ref\u{2}\r";
