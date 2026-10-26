@@ -669,8 +669,11 @@ fn paragraph_props_and_heading_style() {
     let doc = read(&rich_doc(&spec)).expect("opens");
     let heading = doc.styles.styles.iter().find(|s| s.name == "Heading 1").expect("style");
     assert_eq!(heading.para.align, Some(wordcraft_doc::props::Align::Center));
+    // Word's id, which Home › Styles › Heading 1 (Ctrl+Alt+1) applies; with `Heading 1` the
+    // command failed with "no style `Heading1`" in every .doc file.
+    assert_eq!(heading.id, "Heading1");
     let p0 = doc.body.first().and_then(|b| b.as_para()).expect("para");
-    assert_eq!(p0.props.style.as_deref(), Some("Heading 1"));
+    assert_eq!(p0.props.style.as_deref(), Some("Heading1"));
     assert_eq!(heading.para.outline_level, Some(0));
     let p1 = doc.body.get(1).and_then(|b| b.as_para()).expect("para");
     assert_eq!(p1.props.indent_left, Some(36.0)); // 720 twips = 36pt
