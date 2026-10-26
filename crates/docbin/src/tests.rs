@@ -1354,6 +1354,70 @@ fn fields_and_hyperlinks() {
     assert_eq!(result, "3");
 }
 
+/// A table of contents is a TOC field whose result holds one paragraph per entry, each a
+/// HYPERLINK with a PAGEREF inside. The entries were swallowed into one field object, leaving
+/// empty paragraphs and one line of `HYPERLINK \l … PAGEREF …` codes; now they stay paragraphs
+/// between range-field markers, as the DOCX reader keeps them.
+#[test]
+fn toc_entries_stay_paragraphs_with_their_links_and_page_numbers() {
+    use wordcraft_doc::para::InlineObject;
+    let entry =
+        |bm: &str, title: &str, page: &str| format!("\u{13}HYPERLINK \\l \"{bm}\"\u{14}{title}\t\u{13} PAGEREF {bm} \\h \u{14}{page}\u{15}\u{15}");
+    let text = format!("\u{13} TOC \\o \"1-2\" \\h \\z \u{14}{}\r{}\u{15}\rBody\r", entry("_Toc1", "Intro", "4"), entry("_Toc2", "Method", "5"));
+    let text: &'static str = Box::leak(text.into_boxed_str());
+    let spec = structured_spec(text, text.chars().count() as u32);
+    let doc = read(&struct_doc(&spec)).expect("opens");
+    let paras: Vec<_> = doc.body.iter().filter_map(|b| b.as_para()).collect();
+    let texts: Vec<&str> = paras.iter().map(|p| p.text.as_str()).collect();
+    assert_eq!(texts, ["\u{FFFC}Intro\t4", "Method\t5\u{FFFC}", "Body"]);
+    let first = paras.first().expect("first entry");
+    assert!(matches!(first.objects.first(), Some(InlineObject::FieldStart { instr, .. }) if instr == r#"TOC \o "1-2" \h \z"#), "{:?}", first.objects);
+    let second = paras.get(1).expect("second entry");
+    assert!(matches!(second.objects.first(), Some(InlineObject::FieldEnd)), "{:?}", second.objects);
+    // Each entry links to its heading's bookmark.
+    for (p, target) in [(first, "#_Toc1"), (second, "#_Toc2")] {
+        assert!(p.runs.iter().any(|r| r.props.link.as_deref() == Some(target)), "{target}: {:?}", p.runs);
+    }
+}
+
+/// A TOC field with no result yet is still a whole range field.
+#[test]
+fn an_empty_toc_field_is_a_whole_range_field() {
+    use wordcraft_doc::para::InlineObject;
+    let text = "\u{13}TOC \\o\u{15}\r";
+    let spec = structured_spec(text, text.chars().count() as u32);
+    let doc = read(&struct_doc(&spec)).expect("opens");
+    let p0 = doc.body.first().and_then(|b| b.as_para()).expect("para");
+    assert!(matches!(p0.objects.as_slice(), [InlineObject::FieldStart { .. }, InlineObject::FieldEnd]), "{:?}", p0.objects);
+}
+
+/// A field inside another field's result shows its result there, not its code.
+#[test]
+fn a_field_in_a_result_adds_its_result_not_its_code() {
+    let text = "\u{13}QUOTE x\u{14}a\u{13}PAGE\u{14}7\u{15}b\u{15}\r";
+    let spec = structured_spec(text, text.chars().count() as u32);
+    let doc = read(&struct_doc(&spec)).expect("opens");
+    let p0 = doc.body.first().and_then(|b| b.as_para()).expect("para");
+    let Some(wordcraft_doc::para::InlineObject::Field { instr, result, .. }) = p0.objects.first() else { panic!("no field: {:?}", p0.objects) };
+    assert_eq!((instr.as_str(), result.as_str()), ("QUOTE x", "a7b"));
+}
+
+/// Hostile nesting: fields opened inside results thousands deep stay bounded and the TOC
+/// markers still pair up.
+#[test]
+fn deeply_nested_fields_in_results_are_bounded() {
+    use wordcraft_doc::para::InlineObject;
+    let n = 5_000;
+    let text = format!("\u{13}TOC\u{14}{}y{}\u{15}\r", "\u{13}X\u{14}".repeat(n), "\u{15}".repeat(n));
+    let text: &'static str = Box::leak(text.into_boxed_str());
+    let spec = structured_spec(text, text.chars().count() as u32);
+    let doc = read(&struct_doc(&spec)).expect("opens");
+    let objs: Vec<&InlineObject> = doc.body.iter().filter_map(|b| b.as_para()).flat_map(|p| &p.objects).collect();
+    let starts = objs.iter().filter(|o| matches!(o, InlineObject::FieldStart { .. })).count();
+    let ends = objs.iter().filter(|o| matches!(o, InlineObject::FieldEnd)).count();
+    assert_eq!((starts, ends), (1, 1));
+}
+
 #[test]
 fn hyperlink_target_sublocation_and_quotes() {
     assert_eq!(super::hyperlink_target(r#"HYPERLINK "http://example.com" \l "heading""#), Some("http://example.com#heading".into()));
@@ -2481,7 +2545,7 @@ fn a_long_hyperlink_over_a_long_result_is_one_linked_run() {
     // One copy of the target for the one run, not one per character (~2.5 s here): counted by
     // what the copies charge to the work budget, which a busy machine can't skew.
     let result = vec![('y', wordcraft_doc::props::CharProps::default()); n];
-    let f = super::FieldBuild { depth: 1, instr: format!("HYPERLINK \"http://{target}\""), sep: Some(result) };
+    let f = super::FieldBuild { depth: 1, instr: format!("HYPERLINK \"http://{target}\""), sep: Some(result), range: false };
     let work = super::Work::new(u64::MAX);
     super::finish_field(&mut super::ParaBuild::default(), f, &work);
     assert_eq!(u64::MAX - work.left.get(), ("http://".len() + n) as u64, "one copy of the target");
@@ -2494,7 +2558,7 @@ fn hyperlink_target_copies_are_charged_to_the_work_budget() {
     use wordcraft_doc::props::CharProps;
     let bold = CharProps { bold: Some(true), ..Default::default() };
     let result: Vec<(char, CharProps)> = (0..1000).map(|i| ('a', if i % 2 == 0 { bold.clone() } else { CharProps::default() })).collect();
-    let f = super::FieldBuild { depth: 1, instr: format!("HYPERLINK \"{}\"", "u".repeat(100)), sep: Some(result) };
+    let f = super::FieldBuild { depth: 1, instr: format!("HYPERLINK \"{}\"", "u".repeat(100)), sep: Some(result), range: false };
     let mut pb = super::ParaBuild::default();
     let budget = super::Work::new(10_000);
     super::finish_field(&mut pb, f, &budget);

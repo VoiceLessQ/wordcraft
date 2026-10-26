@@ -486,9 +486,10 @@ fn walk<'a>(ctx: &WalkCtx<'a>, cp_start: u32, cp_end: u32, pics: &mut media::Pic
     let mut pb = ParaBuild::default();
     let mut cp = cp_start;
     let mut marks = ctx.marks.iter().peekable();
-    // Field assembly state: instruction characters are swallowed, the result is kept until
-    // the end character, then emitted as one object (hyperlinks keep their result text).
-    let mut field: Option<FieldBuild> = None;
+    // Open fields, innermost last: instruction characters are swallowed, the result is kept until
+    // the end character, then emitted as one object (hyperlinks keep their result text). A field
+    // in another's instruction is flattened into it; one in a result is read on its own.
+    let mut fields: Vec<FieldBuild> = Vec::new();
     let mut memo: Option<FmtMemo<'a>> = None;
     while cp < cp_end {
         // Bookmark boundaries at this CP (main-document walks only; subdocument walks get
@@ -570,32 +571,51 @@ fn walk<'a>(ctx: &WalkCtx<'a>, cp_start: u32, cp_end: u32, pics: &mut media::Pic
             }
             // Field begin/separator/end ([MS-DOC] §2.9.84 Plcfld).
             '\u{13}' => {
-                match field.as_mut() {
-                    Some(f) => {
+                let in_instr = fields.last().is_some_and(|f| f.sep.is_none() && !f.range);
+                if in_instr || fields.len() >= MAX_FIELD_NEST {
+                    if let Some(f) = fields.last_mut() {
                         f.depth = f.depth.saturating_add(1);
                     }
-                    None => field = Some(FieldBuild { depth: 1, instr: String::new(), sep: None }),
+                } else {
+                    fields.push(FieldBuild { depth: 1, instr: String::new(), sep: None, range: false });
                 }
                 cp = cp.saturating_add(1);
                 continue;
             }
             '\u{14}' => {
-                if let Some(f) = field.as_mut()
+                if let Some(f) = fields.last_mut()
                     && f.depth == 1
                     && f.sep.is_none()
+                    && !f.range
                 {
-                    f.sep = Some(Vec::new());
+                    if is_range_instr(&f.instr) {
+                        // A table of contents keeps its entries as ordinary paragraphs between
+                        // markers, as the DOCX reader does.
+                        f.range = true;
+                        push_field_start(&mut pb, &f.instr);
+                    } else {
+                        f.sep = Some(Vec::new());
+                    }
                 }
                 cp = cp.saturating_add(1);
                 continue;
             }
             '\u{15}' => {
-                if let Some(mut f) = field.take() {
+                if let Some(mut f) = fields.pop() {
                     if f.depth > 1 {
                         f.depth -= 1;
-                        field = Some(f);
+                        fields.push(f);
+                    } else if f.range {
+                        push_field_end(&mut pb);
+                    } else if f.sep.is_none() && is_range_instr(&f.instr) {
+                        push_field_start(&mut pb, &f.instr);
+                        push_field_end(&mut pb);
                     } else {
-                        finish_field(&mut pb, f, ctx.work);
+                        match fields.last_mut().filter(|o| !o.range).and_then(|o| o.sep.as_mut()) {
+                            // A field in another field's kept result shows its own result there.
+                            Some(outer) => outer.extend(f.sep.unwrap_or_default()),
+                            None => finish_field(&mut pb, f, ctx.work),
+                        }
                     }
                 }
                 cp = cp.saturating_add(1);
@@ -645,16 +665,16 @@ fn walk<'a>(ctx: &WalkCtx<'a>, cp_start: u32, cp_end: u32, pics: &mut media::Pic
                     pb.objects.push(InlineObject::NoteRef { kind: *kind, id: *id, custom: String::new() });
                 }
             }
-            '\t' => push_formatted(&mut pb, cp, '\t', ctx, field.as_mut(), &mut memo),
-            '\u{B}' => push_formatted(&mut pb, cp, '\n', ctx, field.as_mut(), &mut memo),
-            '\u{C}' => push_formatted(&mut pb, cp, '\u{C}', ctx, field.as_mut(), &mut memo),
-            '\u{E}' => push_formatted(&mut pb, cp, '\u{E}', ctx, field.as_mut(), &mut memo),
-            '\u{1E}' => push_formatted(&mut pb, cp, '\u{2011}', ctx, field.as_mut(), &mut memo),
-            '\u{1F}' => push_formatted(&mut pb, cp, '\u{AD}', ctx, field.as_mut(), &mut memo),
+            '\t' => push_formatted(&mut pb, cp, '\t', ctx, fields.last_mut(), &mut memo),
+            '\u{B}' => push_formatted(&mut pb, cp, '\n', ctx, fields.last_mut(), &mut memo),
+            '\u{C}' => push_formatted(&mut pb, cp, '\u{C}', ctx, fields.last_mut(), &mut memo),
+            '\u{E}' => push_formatted(&mut pb, cp, '\u{E}', ctx, fields.last_mut(), &mut memo),
+            '\u{1E}' => push_formatted(&mut pb, cp, '\u{2011}', ctx, fields.last_mut(), &mut memo),
+            '\u{1F}' => push_formatted(&mut pb, cp, '\u{AD}', ctx, fields.last_mut(), &mut memo),
             // Object anchors, comment references and other special characters are dropped
             // (or handled by later passes).
             c if (c as u32) < 0x20 => {}
-            c => push_formatted(&mut pb, cp, c, ctx, field.as_mut(), &mut memo),
+            c => push_formatted(&mut pb, cp, c, ctx, fields.last_mut(), &mut memo),
         }
         cp = cp.saturating_add(units);
     }
@@ -675,6 +695,29 @@ struct FieldBuild {
     depth: u32,
     instr: String,
     sep: Option<Vec<(char, CharProps)>>,
+    /// A range field: its result is ordinary content after a `FieldStart` marker.
+    range: bool,
+}
+
+/// Fields open inside one another's results at most; deeper ones are flattened into the
+/// innermost, so a hostile file can't grow the stack without bound.
+const MAX_FIELD_NEST: usize = 32;
+
+/// Fields whose result stays ordinary content between `FieldStart` and `FieldEnd` markers, as
+/// the DOCX reader keeps them: a table of contents (its entries are paragraphs) and ADDIN fields.
+fn is_range_instr(instr: &str) -> bool {
+    let t = instr.trim_start();
+    t.split_whitespace().next().is_some_and(|k| k.eq_ignore_ascii_case("TOC")) || t.get(..5).is_some_and(|k| k.eq_ignore_ascii_case("ADDIN"))
+}
+
+fn push_field_start(pb: &mut ParaBuild, instr: &str) {
+    pb.push('\u{FFFC}', CharProps::default());
+    pb.objects.push(InlineObject::FieldStart { instr: instr.trim().to_string(), locked: false, dirty: false });
+}
+
+fn push_field_end(pb: &mut ParaBuild) {
+    pb.push('\u{FFFC}', CharProps::default());
+    pb.objects.push(InlineObject::FieldEnd);
 }
 
 /// Bytes a clone of `obj` copies: the object itself plus a picture's alt text, a group with all
@@ -875,7 +918,8 @@ fn push_formatted<'a>(pb: &mut ParaBuild, cp: u32, c: char, ctx: &WalkCtx<'a>, f
             c = sym;
         }
     }
-    match field {
+    // A range field's result is ordinary content.
+    match field.filter(|f| !f.range) {
         Some(f) => match f.sep.as_mut() {
             // Inside a field, characters are recorded for the field object instead of shown;
             // `finish_field` emits the visible text (hyperlink runs or one object anchor).
