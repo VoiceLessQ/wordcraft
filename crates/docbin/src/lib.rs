@@ -251,7 +251,7 @@ pub fn read_with_password(bytes: &[u8], password: Option<&str>) -> Result<Docume
     // Word's built-in styles (`sti` below istiUser) are built in here too, and with no quick
     // flag read the Home › Styles gallery shows Word's usual set, as the DOCX reader does.
     for raw in raw_styles.iter().filter(|r| !r.name.is_empty() && r.sti < stsh::STI_USER) {
-        let id = fmt::style_id(&raw.name);
+        let id = fmt::raw_style_id(raw);
         if let Some(st) = doc.styles.styles.iter_mut().find(|s| s.id == id) {
             st.builtin = true;
         }
@@ -549,7 +549,7 @@ fn walk<'a>(ctx: &WalkCtx<'a>, cp_start: u32, cp_end: u32, pics: &mut media::Pic
                 let fc_mark = ctx.pieces.fc_of_cp(cp).unwrap_or(0);
                 let (istd, papx) = ctx.papx_bins.papx(ctx.word, fc_mark);
                 if let Some(st) = ctx.raw_styles.get(istd as usize).filter(|s| !s.name.is_empty()) {
-                    pb.props.style = Some(fmt::style_id(&st.name));
+                    pb.props.style = Some(fmt::raw_style_id(st));
                 }
                 let mut row = table::decode(papx);
                 row.cell_mark = c == '\u{7}';

@@ -429,14 +429,15 @@ pub(crate) fn stylesheet(raw: &[crate::stsh::RawStyle], fonts: &[String]) -> Sty
         if st.name.is_empty() {
             continue;
         }
-        let id = style_id(&st.name);
+        let builtin = builtin_by_sti(st.sti);
+        let id = raw_style_id(st);
         let kind = match st.stk {
             2 => StyleKind::Character,
             3 => StyleKind::Table,
             4 => StyleKind::Numbering,
             _ => StyleKind::Paragraph,
         };
-        let base = base_of(raw, istd).and_then(|i| raw.get(i)).map(|b| style_id(&b.name));
+        let base = base_of(raw, istd).and_then(|i| raw.get(i)).map(raw_style_id);
         // Inherit: properties come from the base chain, root first, then our own grpprls.
         let mut chr = CharProps::default();
         let mut para = ParaProps::default();
@@ -445,12 +446,13 @@ pub(crate) fn stylesheet(raw: &[crate::stsh::RawStyle], fonts: &[String]) -> Sty
             apply_chain_para(&mut para, &s.papx);
         }
         if para.outline_level.is_none() && kind == StyleKind::Paragraph {
-            let h = heading_level(&st.name);
+            let h = builtin.as_ref().map_or_else(|| heading_level(&st.name), |b| b.2);
             if h > 0 {
                 para.outline_level = Some(h - 1);
             }
         }
-        sheet.styles.push(Style { id, name: display_name(&st.name), kind, based_on: base, chr, para, ..Default::default() });
+        let name = builtin.map_or_else(|| display_name(&st.name), |b| b.1);
+        sheet.styles.push(Style { id, name, kind, based_on: base, chr, para, ..Default::default() });
     }
     sheet
 }
@@ -481,6 +483,22 @@ fn style_chain(raw: &[crate::stsh::RawStyle], istd: usize) -> Vec<usize> {
     }
     chain.reverse();
     chain
+}
+
+/// The built-in style an invariant `sti` names: (id, shown name, heading level). The `sti` is
+/// the same in every language ([MS-DOC] StdfBase), so "Überschrift 1" is still heading 1.
+fn builtin_by_sti(sti: u16) -> Option<(String, String, u8)> {
+    match sti {
+        0 => Some(("Normal".into(), "Normal".into(), 0)),
+        1..=9 => Some((format!("Heading{sti}"), format!("Heading {sti}"), sti as u8)),
+        19..=27 => Some((format!("TOC{}", sti - 18), format!("TOC {}", sti - 18), 0)),
+        _ => None,
+    }
+}
+
+/// A stored style's id: by its built-in index when it has one, else by its name.
+pub(crate) fn raw_style_id(raw: &crate::stsh::RawStyle) -> String {
+    builtin_by_sti(raw.sti).map_or_else(|| style_id(&raw.name), |b| b.0)
 }
 
 /// The style-id form of a stored (lower-case) built-in name, matching the docx reader's ids.

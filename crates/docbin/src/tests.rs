@@ -774,6 +774,41 @@ fn built_in_styles_fill_the_styles_gallery() {
     assert!(!st("Report Body").quick);
 }
 
+/// Built-in styles are known by their `sti`, which is the same in every language: German
+/// Word's "Überschrift 1" and "Verzeichnis 1" are heading 1 and toc 1. By name alone they got
+/// ids no command looks for.
+#[test]
+fn localized_built_in_styles_take_words_ids() {
+    let spec = RichSpec {
+        text: "a\rb\r",
+        styles: vec![
+            (1, 0x0FFF, "Standard", Vec::new(), Vec::new()),
+            (1, 0, "\u{DC}berschrift 1", Vec::new(), Vec::new()),
+            (1, 0, "Verzeichnis 1", Vec::new(), Vec::new()),
+            (1, 0, "Eigene", Vec::new(), Vec::new()),
+        ],
+        fonts: vec!["Times New Roman"],
+        chpx_runs: vec![(0, Vec::new())],
+        papx_entries: vec![(0, 1, Vec::new()), (2, 2, Vec::new())],
+    };
+    let extra = RichExtra { style_sti: vec![0, 1, 19, 0x0FFE], ..Default::default() };
+    let doc = read(&rich_doc_with(&spec, &extra)).expect("opens");
+    let own: Vec<(&str, &str, Option<&str>)> =
+        doc.styles.styles.iter().take(4).map(|s| (s.id.as_str(), s.name.as_str(), s.based_on.as_deref())).collect();
+    assert_eq!(
+        own,
+        [
+            ("Normal", "Normal", None),
+            ("Heading1", "Heading 1", Some("Normal")),
+            ("TOC1", "TOC 1", Some("Normal")),
+            ("Eigene", "Eigene", Some("Normal"))
+        ]
+    );
+    assert_eq!(doc.styles.get("Heading1").and_then(|s| s.para.outline_level), Some(0));
+    let styles: Vec<Option<&str>> = doc.body.iter().filter_map(|b| b.as_para()).map(|p| p.props.style.as_deref()).collect();
+    assert_eq!(styles, [Some("Heading1"), Some("TOC1")]);
+}
+
 /// #534: Chinese theses set a first-line indent of two characters (`sprmPDxaLeft1`, whose operand
 /// is two bytes, plus `sprmPDxcLeft1` in hundredths of a character), and exact line spacing as a
 /// negative LSPD `dyaLine`. Both were lost: the indent read as four bytes, and exact 20pt as
