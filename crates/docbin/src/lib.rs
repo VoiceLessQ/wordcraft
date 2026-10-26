@@ -596,22 +596,32 @@ fn walk<'a>(ctx: &WalkCtx<'a>, cp_start: u32, cp_end: u32, pics: &mut media::Pic
             }
             // Field begin/separator/end ([MS-DOC] §2.9.84 Plcfld).
             '\u{13}' => {
-                let in_instr = fields.last().is_some_and(|f| f.sep.is_none() && !f.range);
-                if in_instr || fields.len() >= MAX_FIELD_NEST {
-                    if let Some(f) = fields.last_mut() {
-                        f.depth = f.depth.saturating_add(1);
-                    }
-                } else {
-                    fields.push(FieldBuild { depth: 1, instr: String::new(), sep: None, range: false });
+                let full = fields.len() >= MAX_FIELD_NEST;
+                match fields.last_mut() {
+                    Some(f) if f.over_hidden > 0 => f.over_hidden = f.over_hidden.saturating_add(1),
+                    Some(f) if f.sep.is_none() && !f.range => f.depth = f.depth.saturating_add(1),
+                    // Past the cap, a field in a result is counted, not kept: its code is
+                    // hidden and its result shows in the innermost kept field.
+                    Some(f) if full => f.over_hidden = 1,
+                    _ => fields.push(FieldBuild { depth: 1, instr: String::new(), sep: None, range: false, over_hidden: 0, over_shown: 0 }),
                 }
                 cp = cp.saturating_add(1);
                 continue;
             }
             '\u{14}' => {
                 if let Some(f) = fields.last_mut()
+                    && f.over_hidden > 0
+                {
+                    // The separator of the innermost counted field: its result follows.
+                    if f.over_hidden == 1 {
+                        f.over_hidden = 0;
+                        f.over_shown = f.over_shown.saturating_add(1);
+                    }
+                } else if let Some(f) = fields.last_mut()
                     && f.depth == 1
                     && f.sep.is_none()
                     && !f.range
+                    && f.over_shown == 0
                 {
                     if is_range_instr(&f.instr) {
                         // A table of contents keeps its entries as ordinary paragraphs between
@@ -626,7 +636,15 @@ fn walk<'a>(ctx: &WalkCtx<'a>, cp_start: u32, cp_end: u32, pics: &mut media::Pic
                 continue;
             }
             '\u{15}' => {
-                if let Some(mut f) = fields.pop() {
+                if let Some(f) = fields.last_mut()
+                    && (f.over_hidden > 0 || f.over_shown > 0)
+                {
+                    if f.over_hidden > 0 {
+                        f.over_hidden -= 1;
+                    } else {
+                        f.over_shown -= 1;
+                    }
+                } else if let Some(mut f) = fields.pop() {
                     if f.depth > 1 {
                         f.depth -= 1;
                         fields.push(f);
@@ -724,10 +742,14 @@ struct FieldBuild {
     sep: Option<Vec<(char, CharProps)>>,
     /// A range field: its result is ordinary content after a `FieldStart` marker.
     range: bool,
+    /// Fields past [`MAX_FIELD_NEST`] opened in this one's result, only counted: those still
+    /// in their code (whose characters are dropped), and those showing their result here.
+    over_hidden: u32,
+    over_shown: u32,
 }
 
-/// Fields open inside one another's results at most; deeper ones are flattened into the
-/// innermost, so a hostile file can't grow the stack without bound.
+/// Fields open inside one another's results at most; deeper ones are only counted by the
+/// innermost (`over_hidden`, `over_shown`), so a hostile file can't grow the stack without bound.
 const MAX_FIELD_NEST: usize = 32;
 
 /// Fields whose result stays ordinary content between `FieldStart` and `FieldEnd` markers, as
@@ -924,6 +946,10 @@ fn num_of(ilfo: i32) -> Option<u32> {
 /// the character is recorded into the instruction or the cached result instead of (or as
 /// well as) the visible text.
 fn push_formatted<'a>(pb: &mut ParaBuild, cp: u32, c: char, ctx: &WalkCtx<'a>, field: Option<&mut FieldBuild>, memo: &mut Option<FmtMemo<'a>>) {
+    // The code of a field counted past the nesting cap is never shown.
+    if field.as_ref().is_some_and(|f| f.over_hidden > 0) {
+        return;
+    }
     let fc = ctx.pieces.fc_of_cp(cp).unwrap_or(0);
     let grpprl = ctx.chpx_bins.chpx(ctx.word, fc);
     let prm = ctx.pieces.prm_of(cp);
