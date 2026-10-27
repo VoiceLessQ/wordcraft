@@ -1388,19 +1388,20 @@ enum Mark {
 
 /// Inline spans → Markdown with properly nested markers.
 fn inlines_md(inlines: &[Inline]) -> String {
-    inlines_md_impl(inlines, false)
+    inlines_md_impl(inlines, false, true)
 }
 
 fn inlines_md_table(inlines: &[Inline]) -> String {
-    inlines_md_impl(inlines, true)
+    inlines_md_impl(inlines, true, false)
 }
 
-fn inlines_md_impl(inlines: &[Inline], in_table: bool) -> String {
+/// `own_line`: the inlines fill a line that a `$$` display block can stand on.
+fn inlines_md_impl(inlines: &[Inline], in_table: bool, own_line: bool) -> String {
     // Split into (text, fmt) pieces with whitespace moved outside emphasis.
     let mut pieces: Vec<(String, Fmt, Option<String>)> = Vec::new();
     // Markdown keeps no ruby: its base text goes through the text path below.
     let inlines = crate::model::ruby_as_text(inlines);
-    let alone = inlines.len() == 1;
+    let alone = own_line && inlines.len() == 1;
     for i in inlines.iter() {
         match i {
             Inline::Text(t, f) => {
@@ -1437,10 +1438,10 @@ fn inlines_md_impl(inlines: &[Inline], in_table: bool) -> String {
                 let latex = latex.trim();
                 if latex.is_empty() {
                     pieces.push((linear.clone(), Fmt::default(), None));
-                } else if *display && alone && !in_table {
+                } else if *display && alone {
                     pieces.push((String::new(), Fmt::default(), Some(format!("$${latex}$$"))));
                 } else {
-                    // Only a paragraph of its own can be a `$$` block; a bare `|` would end the cell.
+                    // Only a body line of its own can be a `$$` block; a bare `|` would end the cell.
                     let latex = if in_table { latex.replace('|', "\\|") } else { latex.to_string() };
                     pieces.push((String::new(), Fmt::default(), Some(format!("${latex}$"))));
                 }
@@ -1457,6 +1458,8 @@ fn inlines_md_impl(inlines: &[Inline], in_table: bool) -> String {
             out.push_str(marker(m));
         }
     };
+    // Whether `out` ends with an equation's closing `$`, which a text `$` must not touch.
+    let mut after_raw = false;
     for (text, f, raw) in pieces {
         // Links are the outermost construct; a script or other non-web target is plain text.
         let f_link = f.link.clone().filter(|l| wordcraft_doc::link::is_safe_href(l));
@@ -1467,7 +1470,13 @@ fn inlines_md_impl(inlines: &[Inline], in_table: bool) -> String {
             }
             link = None;
             if let Some(r) = raw {
+                // A text `$` before an opening `$` would make `$$`.
+                if r.starts_with('$') && !after_raw && out.ends_with('$') {
+                    out.pop();
+                    out.push_str("\\$");
+                }
                 out.push_str(&r);
+                after_raw = true;
                 continue;
             }
             if let Some(l) = f_link {
@@ -1499,8 +1508,13 @@ fn inlines_md_impl(inlines: &[Inline], in_table: bool) -> String {
                 out.push_str(&code_span(&text));
             }
         } else {
-            out.push_str(&escape(&text).replace('\n', "\\\n").replace('\t', "    "));
+            let t = escape(&text).replace('\n', "\\\n").replace('\t', "    ");
+            if after_raw && out.ends_with('$') && t.starts_with('$') {
+                out.push('\\');
+            }
+            out.push_str(&t);
         }
+        after_raw = false;
     }
     close_all(&mut out, &mut stack);
     if let Some(l) = &link {
@@ -1645,7 +1659,11 @@ fn write_blocks(blocks: &[FBlock], out: &mut Vec<String>) {
                 continue;
             }
             FBlock::Para(p) => {
-                let body = inlines_md(&p.inlines);
+                // A `#` line is read before `$$` blocks, so a heading writes its equations `$…$`.
+                let body = match p.kind {
+                    Kind::Heading(_) | Kind::Title => inlines_md_impl(&p.inlines, false, false),
+                    _ => inlines_md(&p.inlines),
+                };
                 match p.list {
                     Some(li) => {
                         let lv = li.level.min(8) as usize;
@@ -2369,8 +2387,8 @@ mod tests {
     }
 
     /// Equations are written as LaTeX between dollars: a `$$…$$` line for a display equation
-    /// alone in its paragraph, `$…$` for any other, with escaped bars in a table cell. Before,
-    /// Markdown wrote their linear text and reopening the file lost them (#4130).
+    /// alone in its paragraph, `$…$` for any other (a heading's too), with escaped bars in a
+    /// table cell. Before, Markdown wrote their linear text and reopening the file lost them (#4130).
     #[test]
     fn equations_export_as_latex_and_display_lines_read_back() {
         let eq = |linear: &str, display: bool| Inline::Equation { linear: linear.into(), display };
@@ -2382,13 +2400,14 @@ mod tests {
                 para(vec![text("Energy "), eq("E = mc^2", false), text(".")]),
                 para(vec![eq("α → β", true)]),
                 para(vec![text("so "), eq("x", true)]),
+                FBlock::Para(Para { kind: Kind::Heading(2), inlines: vec![eq("y", true)], ..Default::default() }),
                 FBlock::Table(FTable { rows: vec![vec![cell], vec![Cell::default()]], ..Default::default() }),
             ],
             ..Default::default()
         };
         let md = export(&model::to_doc(&flow));
         let lines: Vec<&str> = md.lines().collect();
-        for line in ["Energy $E = mc^2$.", "$$\\alpha \\to \\beta$$", "so $x$", "| $\\|x\\|$ |"] {
+        for line in ["Energy $E = mc^2$.", "$$\\alpha \\to \\beta$$", "so $x$", "## $y$", "| $\\|x\\|$ |"] {
             assert!(lines.contains(&line), "{line:?} in {md:?}");
         }
         let back = model::from_doc(&import(&md));
@@ -2411,6 +2430,14 @@ mod tests {
             let back = model::from_doc(&import(&md));
             assert!(equations(&back).is_empty(), "{md:?}");
             assert_eq!(para_texts(&back), [text], "{md:?}");
+        }
+        // Nor does a text `$` next to an equation's delimiter.
+        let text = |t: &str| Inline::Text(t.into(), Fmt::default());
+        let eq = |display: bool| Inline::Equation { linear: "x".into(), display };
+        for (inlines, written) in [(vec![text("$"), eq(false), text("$")], "\\$$x$\\$"), (vec![text("a $"), eq(true)], "a \\$$x$")] {
+            let md = inlines_md(&inlines);
+            assert_eq!(md, written);
+            assert!(equations(&model::from_doc(&import(&md))).is_empty(), "{md:?}");
         }
         let src = "The relation $E = mc^2$ holds, at $5 a go.";
         assert_eq!(export(&import(src)), format!("{src}\n"));
