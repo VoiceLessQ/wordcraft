@@ -1458,7 +1458,7 @@ fn inlines_md_impl(inlines: &[Inline], in_table: bool, own_line: bool) -> String
             out.push_str(marker(m));
         }
     };
-    // Whether `out` ends with an equation's closing `$`, which a text `$` must not touch.
+    // Whether `out` ends with raw output, such as an equation's closing `$`.
     let mut after_raw = false;
     for (text, f, raw) in pieces {
         // Links are the outermost construct; a script or other non-web target is plain text.
@@ -1509,7 +1509,8 @@ fn inlines_md_impl(inlines: &[Inline], in_table: bool, own_line: bool) -> String
             }
         } else {
             let t = escape(&text).replace('\n', "\\\n").replace('\t', "    ");
-            if after_raw && out.ends_with('$') && t.starts_with('$') {
+            // After an equation or another span's `$`, which a span split by underline can leave.
+            if out.ends_with('$') && t.starts_with('$') {
                 out.push('\\');
             }
             out.push_str(&t);
@@ -2431,10 +2432,14 @@ mod tests {
             assert!(equations(&back).is_empty(), "{md:?}");
             assert_eq!(para_texts(&back), [text], "{md:?}");
         }
-        // Nor does a text `$` next to an equation's delimiter.
+        // Nor does a text `$` next to an equation's delimiter or another span's `$`.
         let text = |t: &str| Inline::Text(t.into(), Fmt::default());
         let eq = |display: bool| Inline::Equation { linear: "x".into(), display };
-        for (inlines, written) in [(vec![text("$"), eq(false), text("$")], "\\$$x$\\$"), (vec![text("a $"), eq(true)], "a \\$$x$")] {
+        for (inlines, written) in [
+            (vec![text("$"), eq(false), text("$")], "\\$$x$\\$"),
+            (vec![text("a $"), eq(true)], "a \\$$x$"),
+            (vec![text("$"), text("$x$"), text("$")], "$\\$x$\\$"),
+        ] {
             let md = inlines_md(&inlines);
             assert_eq!(md, written);
             assert!(equations(&model::from_doc(&import(&md))).is_empty(), "{md:?}");
