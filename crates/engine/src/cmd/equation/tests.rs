@@ -45,7 +45,8 @@ fn structures_symbols_and_navigation() {
     s.run("equation.type", &json!({"text": "n"})).unwrap();
     s.run("equation.move", &json!({"dir": "next"})).unwrap();
     s.run("equation.type", &json!({"text": "k"})).unwrap();
-    assert_eq!(linear(&s), "1/π∑_(k=1)^n▒k");
+    // The space keeps the sum out of the denominator when the text is read back.
+    assert_eq!(linear(&s), "1/π ∑_(k=1)^n▒k");
     let r = s.run("equation.get", &json!({})).unwrap();
     assert!(r["latex"].as_str().unwrap().contains("\\sum"));
     // Moving right past the end leaves the equation.
@@ -588,4 +589,18 @@ fn text_typed_after_a_build_up_in_one_command_joins_its_undo_step() {
     s.run("edit.undo", &json!({})).unwrap();
     assert_eq!(linear(&s), "1/2 x");
     assert_eq!(caret_off(&s), 5);
+}
+
+#[test]
+fn undo_puts_the_caret_back_in_an_equation_kept_as_linear_text() {
+    // CodeRabbit on #4717: the restored step holds no nodes yet, only the linear text.
+    let mut s = session();
+    s.run("insert.equation", &json!({"linear": "x+1"})).unwrap();
+    clear_nodes(&mut s);
+    s.run("equation.edit", &json!({"pos": {"path": [], "off": 2}})).unwrap();
+    assert_eq!(caret_off(&s), 2);
+    s.run("equation.type", &json!({"text": "y"})).unwrap();
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(linear(&s), "x+1");
+    assert_eq!(caret_off(&s), 2, "caret back where it was, not at the start");
 }

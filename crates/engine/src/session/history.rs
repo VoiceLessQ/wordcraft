@@ -1,7 +1,7 @@
 use super::doc_state::{MAX_UNDO, Selection, UNDO_LIST_MAX, Undo, next_math_session};
 use super::{Arc, Document, Session};
+use wordcraft_doc::Pos;
 use wordcraft_doc::math_edit::MathPos;
-use wordcraft_doc::{InlineObject, Pos};
 
 impl Session {
     /// Snapshot for undo before a change. Returns whether it took a step: typing that is
@@ -248,12 +248,13 @@ impl Session {
     /// Puts the equation caret where the restored step had it, when the same equation is open.
     fn restore_math_caret(&mut self, step: Option<(Pos, MathPos)>) {
         let Some((at, pos)) = step else { return };
-        let Some(m) = self.math.as_mut().filter(|m| m.at == at) else { return };
-        let nodes = match self.doc.para_at(&at).and_then(|p| p.object_at(at.off)) {
-            Some(InlineObject::Equation { math, .. }) => &math.nodes,
-            _ => return,
-        };
-        m.pos = wordcraft_doc::math_edit::clamp(nodes, &pos);
+        if self.math.as_ref().is_none_or(|m| m.at != at) {
+            return;
+        }
+        let Some(nodes) = self.equation_nodes(&at) else { return };
+        if let Some(m) = self.math.as_mut() {
+            m.pos = wordcraft_doc::math_edit::clamp(&nodes, &pos);
+        }
     }
 
     /// An equation's editing session cannot ride across Undo/Redo: the equation tree, or the

@@ -488,15 +488,18 @@ fn lin_arg(a: &[MNode], s: &mut String, depth: usize) {
     if depth > MAX_DEPTH {
         return;
     }
-    for (i, n) in a.iter().enumerate() {
-        lin_node(n, s, depth + 1);
-        // A bare trailing operand ends at a space: a letter, digit or period after it is its own item.
-        if ends_in_operand(n) {
-            let ends_bare = s.chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '.');
-            if ends_bare && a.get(i + 1).and_then(first_lin_char).is_some_and(|c| c.is_alphanumeric() || c == '.') {
-                s.push(' ');
-            }
+    let absorbs = |c: char| !crate::math_linear::is_boundary(c);
+    // Whether the last item ends in a bare operand the next item's first character would extend.
+    let mut open = false;
+    for n in a {
+        let mut piece = String::new();
+        lin_node(n, &mut piece, depth + 1);
+        // A bare trailing operand ends at a space: what follows is its own item.
+        if open && piece.chars().next().is_some_and(absorbs) {
+            s.push(' ');
         }
+        s.push_str(&piece);
+        open = ends_in_operand(n) && piece.chars().next_back().is_some_and(absorbs);
     }
 }
 
@@ -514,18 +517,6 @@ fn ends_in_operand(n: &MNode) -> bool {
         | MNode::Boxed { .. }
         | MNode::GroupChr { .. } => true,
         _ => false,
-    }
-}
-
-/// The first character `n` is written with, when that is cheap to tell (letters and digits).
-fn first_lin_char(n: &MNode) -> Option<char> {
-    match n {
-        MNode::Run(r) => r.text.chars().next(),
-        MNode::Func { name, .. } => name.first().and_then(first_lin_char),
-        MNode::Script { kind, base, .. } if *kind != ScriptKind::Pre => base.first().and_then(first_lin_char),
-        MNode::Lim { e, .. } => e.first().and_then(first_lin_char),
-        MNode::Frac { num, .. } => num.first().and_then(first_lin_char),
-        _ => None,
     }
 }
 
@@ -574,6 +565,18 @@ fn lin_script(a: &[MNode], s: &mut String, depth: usize) {
     lin_operand(a, s, depth);
 }
 
+/// A fraction's denominator. A bare function name would take what follows as its argument.
+fn lin_denominator(den: &[MNode], s: &mut String, depth: usize) {
+    match den {
+        [MNode::Run(r)] if crate::math_linear::FUNCTION_NAMES.contains(&r.text.as_str()) => {
+            s.push('(');
+            s.push_str(&r.text);
+            s.push(')');
+        }
+        _ => lin_operand(den, s, depth),
+    }
+}
+
 fn lin_node(n: &MNode, s: &mut String, depth: usize) {
     match n {
         MNode::Run(r) => s.push_str(&r.text),
@@ -585,7 +588,7 @@ fn lin_node(n: &MNode, s: &mut String, depth: usize) {
                 FracKind::NoBar => '¦',
                 FracKind::Bar => '/',
             });
-            lin_operand(den, s, depth);
+            lin_denominator(den, s, depth);
         }
         MNode::Script { kind, base, sub, sup } => {
             if *kind == ScriptKind::Pre {
@@ -1105,14 +1108,25 @@ mod tests {
         let sum = MNode::Nary { chr: '∑', sub_hide: true, sup_hide: true, sub: vec![], sup: vec![], e: vec![run("k")], lim_loc: None, grow: false };
         let bar = MNode::Bar { top: true, e: vec![run("a")] };
         let boxed = MNode::Boxed { e: vec![run("a")] };
+        let paren = MNode::Delim { beg: Some('('), end: Some(')'), sep: None, elems: vec![vec![run("x")]], grow: true, shp_match: false };
+        // A function name as a denominator: `1/sin x^2` would read as sin(x^2).
+        let sin_den = MNode::Frac { kind: FracKind::Bar, num: vec![run("1")], den: vec![MNode::Run(MRun::plain("sin"))] };
         for n in [
             vec![half.clone(), x2.clone()],
             vec![half.clone(), run("x")],
-            vec![sqrt2, run("x")],
+            vec![sqrt2.clone(), run("x")],
             vec![sin_x, run("y")],
-            vec![sum, run("y")],
-            vec![bar, run("b")],
-            vec![boxed, run("b")],
+            vec![sum.clone(), run("y")],
+            vec![bar.clone(), run("b")],
+            vec![boxed.clone(), run("b")],
+            // CodeRabbit on #4717: prefix structures and brackets after a fraction.
+            vec![half.clone(), sqrt2.clone()],
+            vec![half.clone(), bar],
+            vec![half.clone(), boxed],
+            vec![half.clone(), sum.clone()],
+            vec![half.clone(), paren],
+            vec![sin_den.clone(), x2.clone()],
+            vec![sin_den.clone()],
         ] {
             let lin = to_linear(&n);
             assert_eq!(parse_linear(&lin), n, "{lin}");
