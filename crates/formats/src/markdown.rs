@@ -9,8 +9,8 @@
 //! A `$$…$$` block (one line or several) is a display equation, read through the LaTeX math reader.
 //!
 //! Export writes the same constructs; pictures become `![alt](media-name)` placeholders, and
-//! equations LaTeX: a `$$…$$` line for a display equation alone in its paragraph, `$…$` for any
-//! other.
+//! equations LaTeX: a `$$…$$` line for a display equation alone in its paragraph or on a line of
+//! its own in a list item, `$…$` for any other.
 
 use std::collections::HashMap;
 use std::sync::Arc;

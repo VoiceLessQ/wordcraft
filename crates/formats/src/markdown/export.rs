@@ -99,6 +99,57 @@ fn inlines_md_table(inlines: &[Inline]) -> String {
     inlines_md_impl(inlines, true, false)
 }
 
+/// A list item's inlines split around each display equation with a line of its own, so it can
+/// be written as a `$$` line. The reader joins an item's later paragraphs back with a break.
+fn item_lines(inlines: &[Inline]) -> Vec<Vec<Inline>> {
+    let own_line = |k: usize| {
+        let before = match k.checked_sub(1).and_then(|j| inlines.get(j)) {
+            // A hard break left before a `$$` line would read back as a backslash.
+            Some(Inline::Text(t, _)) => t.ends_with('\n') && !t.ends_with("\n\n"),
+            Some(_) => false,
+            None => true,
+        };
+        let after = match inlines.get(k.saturating_add(1)) {
+            Some(Inline::Text(t, _)) => t.starts_with('\n'),
+            Some(_) => false,
+            None => true,
+        };
+        before && after
+    };
+    let mut lines: Vec<Vec<Inline>> = vec![Vec::new()];
+    let mut after_eq = false;
+    for (k, i) in inlines.iter().enumerate() {
+        let Some(line) = lines.last_mut() else { break };
+        match i {
+            Inline::Equation { display: true, .. } if own_line(k) => {
+                // The breaks around it become the newlines of its own line.
+                if let Some(Inline::Text(t, _)) = line.last_mut()
+                    && t.ends_with('\n')
+                {
+                    t.pop();
+                    if t.is_empty() {
+                        line.pop();
+                    }
+                }
+                lines.push(vec![i.clone()]);
+                lines.push(Vec::new());
+                after_eq = true;
+                continue;
+            }
+            Inline::Text(t, f) if after_eq => {
+                let t = t.strip_prefix('\n').unwrap_or(t);
+                if !t.is_empty() {
+                    line.push(Inline::Text(t.to_string(), f.clone()));
+                }
+            }
+            _ => line.push(i.clone()),
+        }
+        after_eq = false;
+    }
+    lines.retain(|l| !l.is_empty());
+    lines
+}
+
 /// `own_line`: the inlines fill a line that a `$$` display block can stand on.
 fn inlines_md_impl(inlines: &[Inline], in_table: bool, own_line: bool) -> String {
     // Split into (text, fmt) pieces with whitespace moved outside emphasis.
@@ -394,7 +445,13 @@ pub(super) fn write_blocks(blocks: &[FBlock], out: &mut Vec<String>) {
                         let body = if p.kind == Kind::Code {
                             code_span(&p.text())
                         } else {
-                            let body = escape_lines(body).replace("\\\n", &format!("\\\n{cont}"));
+                            let item = |b: String| escape_lines(b).replace("\\\n", &format!("\\\n{cont}"));
+                            let lines = item_lines(&p.inlines);
+                            let body = if lines.len() > 1 {
+                                lines.iter().map(|l| item(inlines_md(l))).collect::<Vec<_>>().join(&format!("\n{cont}"))
+                            } else {
+                                item(body)
+                            };
                             // The bullet marker can turn a short run of hyphens into a rule.
                             if thematic_break(&format!("{marker} {body}")) { format!("\\{body}") } else { body }
                         };

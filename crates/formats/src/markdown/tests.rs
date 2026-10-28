@@ -712,3 +712,20 @@ fn text_dollars_never_read_back_as_display_math() {
     let src = "The relation $E = mc^2$ holds, at $5 a go.";
     assert_eq!(export(&import(src)), format!("{src}\n"));
 }
+
+/// A display equation on a line of its own in a list item is a `$$` line too. The reader joins
+/// an item's later paragraphs onto its first with a break, and such an equation wrote `$…$`,
+/// which reopened as text.
+#[test]
+fn list_item_display_equations_keep_their_own_line() {
+    for src in ["- intro\n  $$x^2$$", "- intro\n  $$x^2$$\n  more", "1. $$x^2$$\n   more\n   $$y$$", "- a\n    - b\n      $$x^2$$"] {
+        let eqs = equations(&parse(src));
+        assert!(!eqs.is_empty() && eqs.iter().all(|e| e.1), "{src:?}");
+        assert_eq!(export(&import(src)), format!("{src}\n"));
+    }
+    // After an empty line it stays `$…$`: a `\` break before a `$$` line reads back as a backslash.
+    let inlines = vec![Inline::Text("a\n\n".into(), Fmt::default()), Inline::Equation { linear: "x".into(), display: true }];
+    let p = Para { list: Some(ListInfo { ordered: false, level: 0, start: 1 }), inlines, ..Default::default() };
+    let md = export(&model::to_doc(&model::Flow { blocks: vec![FBlock::Para(p)], ..Default::default() }));
+    assert!(para_texts(&model::from_doc(&import(&md))).iter().all(|t| !t.contains('\\')), "{md:?}");
+}
