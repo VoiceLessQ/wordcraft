@@ -297,7 +297,8 @@ fn current(s: &Session) -> Result<MathEdit, CmdError> {
 
 /// Caps typing at `MAX_EQUATION_TYPE_CHARS`; empty text is a classified no-op. Linear form
 /// inserts literal runs, while built-up form applies AutoCorrect and build-up before spaces and
-/// relational characters.
+/// relational characters. The text as typed before the last rewrite is its own undo step, so
+/// Undo right after a build-up takes back only the build-up, as Word does.
 fn type_text(s: &mut Session, v: &Value) -> CmdResult {
     let text = p::req_str(v, "text")?.to_string();
     let m = current(s)?;
@@ -310,6 +311,7 @@ fn type_text(s: &mut Session, v: &Value) -> CmdResult {
     let style = TypeStyle { nor: s.math_normal_text };
     let mut pos = m.pos.clone();
     let mut transformed = false;
+    let mut typed: Option<(Arg, MathPos)> = None;
     let (_, effect) = with_eq(s, &m.at, |math, _| {
         if math.linear {
             // Linear form is plain text: no build-up.
@@ -321,6 +323,7 @@ fn type_text(s: &mut Session, v: &Value) -> CmdResult {
         for c in text.chars().take(crate::MAX_EQUATION_TYPE_CHARS) {
             let rel = matches!(wordcraft_doc::math::math_class(c), wordcraft_doc::math::MClass::Rel);
             if !style.nor && (c == ' ' || c == '\t' || rel) {
+                let (mut as_typed, before) = (math.nodes.clone(), pos.clone());
                 let mut changed = false;
                 if let Some(p) = me::autocorrect(&mut math.nodes, &pos) {
                     pos = p;
@@ -332,16 +335,35 @@ fn type_text(s: &mut Session, v: &Value) -> CmdResult {
                 }
                 if changed {
                     transformed = true;
-                }
-                if c == ' ' && changed {
+                    let p = me::insert_text(&mut as_typed, &before, &c.to_string(), style);
+                    typed = Some((as_typed, p));
+                    if c != ' ' {
+                        pos = me::insert_text(&mut math.nodes, &pos, &c.to_string(), style);
+                    }
                     continue;
                 }
             }
             pos = me::insert_text(&mut math.nodes, &pos, &c.to_string(), style);
+            // Text after the last rewrite belongs to the as-typed step too.
+            if let Some((nodes, p)) = typed.as_mut() {
+                *p = me::insert_text(nodes, p, &c.to_string(), style);
+            }
         }
     })?;
     if let Some(m) = s.math.as_mut() {
         m.pos = pos;
+    }
+    if let Some((nodes, p)) = typed {
+        let mut doc = s.doc.clone();
+        if let Ok(para) = doc.para_mut(m.at.story, &m.at.path)
+            && let Some(InlineObject::Equation { linear, math, .. }) = para.object_at_mut(m.at.off)
+        {
+            *linear = to_linear(&nodes);
+            math.nodes = nodes;
+            para.touch();
+            let sel = s.sel.clone();
+            s.push_math_undo("Build Up", doc, sel, p);
+        }
     }
     apply_effect(s, effect, transformed);
     result(s)

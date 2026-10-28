@@ -25,10 +25,9 @@ fn type_an_equation_like_word() {
     assert_eq!(linear(&s), "x=(-b±√(b^2-4ac))/2a");
     let nodes = nodes_of(&s, &s.math.as_ref().unwrap().at).unwrap();
     assert!(matches!(nodes.get(1), Some(MNode::Frac { .. })), "{nodes:#?}");
-    // One undo step for the typing.
-    s.run("equation.exit", &json!({})).unwrap();
+    // Undo takes back the last build-up, leaving the text as typed.
     s.run("edit.undo", &json!({})).unwrap();
-    assert!(linear(&s).is_empty());
+    assert_eq!(linear(&s), "x=(-b±√(b^2-4ac))/2a ");
 }
 
 #[test]
@@ -529,4 +528,64 @@ fn equation_delete_surrounding_moves_the_caret_for_a_one_step_delete() {
     s.run("equation.deleteSurrounding", &json!({"after": 1, "before": 0})).unwrap();
     assert_eq!(linear(&s), "bc");
     assert_eq!(s.math.as_ref().unwrap().pos, MathPos::new(Vec::new(), 0));
+}
+
+fn type_keys(s: &mut Session, keys: &str) {
+    for c in keys.chars() {
+        s.run("equation.type", &json!({"text": c.to_string()})).unwrap();
+    }
+}
+
+fn caret_off(s: &Session) -> usize {
+    s.math.as_ref().unwrap().pos.off
+}
+
+#[test]
+fn text_after_a_built_fraction_stays_outside_it() {
+    // Discord report: `1/2` Space then `x^2` Space gave 1/(2x^2); Word gives (1/2)x^2.
+    let mut s = session();
+    s.run("insert.equation", &json!({})).unwrap();
+    type_keys(&mut s, "1/2 x^2 ");
+    let nodes = nodes_of(&s, &s.math.as_ref().unwrap().at).unwrap();
+    assert_eq!(nodes.len(), 2, "{nodes:#?}");
+    assert!(matches!(&nodes[0], MNode::Frac { den, .. } if matches!(den.as_slice(), [MNode::Run(r)] if r.text == "2")), "{nodes:#?}");
+    assert!(matches!(&nodes[1], MNode::Script { .. }), "{nodes:#?}");
+}
+
+#[test]
+fn undo_takes_back_one_build_up_at_a_time() {
+    // Discord report: Ctrl+Z after a build-up removed the whole equation's typing.
+    let mut s = session();
+    s.run("insert.equation", &json!({})).unwrap();
+    type_keys(&mut s, "1/2 x^2 ");
+    let undo = |s: &mut Session| s.run("edit.undo", &json!({})).unwrap();
+    undo(&mut s);
+    assert_eq!(linear(&s), "1/2 x^2 ", "the last build-up is undone, the text stays as typed");
+    assert_eq!(caret_off(&s), 5, "caret after the typed text, not inside it");
+    undo(&mut s);
+    assert_eq!(linear(&s), "1/2", "then the typing after the fraction");
+    assert_eq!(caret_off(&s), 1);
+    undo(&mut s);
+    assert_eq!(linear(&s), "1/2 ", "then the fraction's build-up");
+    assert_eq!(caret_off(&s), 4);
+    undo(&mut s);
+    assert_eq!(linear(&s), "");
+    // Redo walks forward again, caret included.
+    s.run("edit.redo", &json!({})).unwrap();
+    assert_eq!(linear(&s), "1/2 ");
+    assert_eq!(caret_off(&s), 4);
+    s.run("edit.redo", &json!({})).unwrap();
+    assert_eq!(linear(&s), "1/2");
+    assert_eq!(caret_off(&s), 1);
+}
+
+#[test]
+fn text_typed_after_a_build_up_in_one_command_joins_its_undo_step() {
+    // An input method can commit `1/2 x` at once: Undo must not drop the `x`.
+    let mut s = session();
+    s.run("insert.equation", &json!({})).unwrap();
+    s.run("equation.type", &json!({"text": "1/2 x"})).unwrap();
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(linear(&s), "1/2 x");
+    assert_eq!(caret_off(&s), 5);
 }
