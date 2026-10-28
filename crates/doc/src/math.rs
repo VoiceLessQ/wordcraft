@@ -490,13 +490,30 @@ fn lin_arg(a: &[MNode], s: &mut String, depth: usize) {
     }
     for (i, n) in a.iter().enumerate() {
         lin_node(n, s, depth + 1);
-        // A bare script or limit ends at a space: a letter, digit or period after it is its own item.
-        if matches!(n, MNode::Script { kind, .. } if *kind != ScriptKind::Pre) || matches!(n, MNode::Lim { .. }) {
+        // A bare trailing operand ends at a space: a letter, digit or period after it is its own item.
+        if ends_in_operand(n) {
             let ends_bare = s.chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '.');
             if ends_bare && a.get(i + 1).and_then(first_lin_char).is_some_and(|c| c.is_alphanumeric() || c == '.') {
                 s.push(' ');
             }
         }
+    }
+}
+
+/// Whether `n` is written ending in an operand the parser would extend (`1/2` then `x` reads `1/(2x)`).
+fn ends_in_operand(n: &MNode) -> bool {
+    match n {
+        MNode::Script { kind, .. } => *kind != ScriptKind::Pre,
+        MNode::Rad { deg, deg_hide, .. } => *deg_hide || deg.is_empty(),
+        MNode::Lim { .. }
+        | MNode::Frac { .. }
+        | MNode::Nary { .. }
+        | MNode::Func { .. }
+        | MNode::Bar { .. }
+        | MNode::BorderBox { .. }
+        | MNode::Boxed { .. }
+        | MNode::GroupChr { .. } => true,
+        _ => false,
     }
 }
 
@@ -1076,6 +1093,32 @@ mod tests {
         assert_eq!(to_linear(&[sc(ScriptKind::Sub, "x", "i", ""), run("y")]), "x_i y");
         // Nothing extra when the script already ends in a bracket or a symbol follows.
         assert_eq!(to_linear(&[sc(ScriptKind::Sub, "x", "i", ""), run("+")]), "x_i+");
+    }
+
+    #[test]
+    fn a_trailing_operand_keeps_the_item_after_it() {
+        // Discord report: `1/2` built, then `x^2` read back as 1/(2x^2).
+        let x2 = MNode::Script { kind: ScriptKind::Sup, base: vec![run("x")], sub: vec![], sup: vec![run("2")] };
+        let half = MNode::Frac { kind: FracKind::Bar, num: vec![run("1")], den: vec![run("2")] };
+        let sqrt2 = MNode::Rad { deg: vec![], deg_hide: true, e: vec![run("2")] };
+        let sin_x = MNode::Func { name: vec![MNode::Run(MRun::plain("sin"))], e: vec![run("x")] };
+        let sum = MNode::Nary { chr: '∑', sub_hide: true, sup_hide: true, sub: vec![], sup: vec![], e: vec![run("k")], lim_loc: None, grow: false };
+        let bar = MNode::Bar { top: true, e: vec![run("a")] };
+        let boxed = MNode::Boxed { e: vec![run("a")] };
+        for n in [
+            vec![half.clone(), x2.clone()],
+            vec![half.clone(), run("x")],
+            vec![sqrt2, run("x")],
+            vec![sin_x, run("y")],
+            vec![sum, run("y")],
+            vec![bar, run("b")],
+            vec![boxed, run("b")],
+        ] {
+            let lin = to_linear(&n);
+            assert_eq!(parse_linear(&lin), n, "{lin}");
+        }
+        assert_eq!(to_linear(&[half.clone(), x2]), "1/2 x^2");
+        assert_eq!(to_linear(&[half, run("+")]), "1/2+");
     }
 
     #[test]
