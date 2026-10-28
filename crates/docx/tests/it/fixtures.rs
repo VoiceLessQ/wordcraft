@@ -1754,6 +1754,23 @@ fn resized_model_3d_resizes_its_fallback_too() {
 }
 
 #[test]
+fn model_3d_after_a_choice_it_cant_keep_is_still_kept() {
+    let mut files = unzip(&model3d_docx(true));
+    let doc = text(&files, "word/document.xml");
+    let choice = doc.split("<mc:Choice").nth(1).and_then(|c| c.split("</mc:Choice>").next()).unwrap();
+    let unknown =
+        format!(r#"<mc:Choice{}</mc:Choice>"#, choice.replace(r#"Requires="am3d""#, r#"xmlns:x9="urn:example:unknown" Requires="am3d x9""#));
+    files.insert("word/document.xml".into(), doc.replacen("<mc:AlternateContent>", &format!("<mc:AlternateContent>{unknown}"), 1).into_bytes());
+    let entries: Vec<_> = files.iter().map(|(name, bytes)| (name.as_str(), bytes.as_slice())).collect();
+    let d = wordcraft_docx::read(&zip(&entries)).unwrap();
+    let g = graphics(&d);
+    let [InlineObject::Graphic { graphic, .. }] = g.as_slice() else { panic!("{g:?}") };
+    assert_eq!(graphic.kind, wordcraft_doc::graphic::GraphicKind::Model3d);
+    let body = text(&unzip(&wordcraft_docx::write(&d).unwrap()), "word/document.xml");
+    assert_eq!(attr_values(&body, "mc:Choice", "Requires"), ["am3d"], "only the Choice that can be kept: {body}");
+}
+
+#[test]
 fn model_3d_without_its_model_part_opens_as_its_picture() {
     let d = wordcraft_docx::read(&model3d_docx(false)).unwrap();
     let objects: Vec<InlineObject> = paras(&d).iter().flat_map(|p| p.objects.iter()).cloned().collect();

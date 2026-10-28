@@ -151,7 +151,12 @@ impl Reader<'_> {
     /// the chart or model back rather than only the picture. `None` (read the fallback alone)
     /// when it can't be kept whole.
     pub(super) fn read_kept_alternate(&mut self, sc: &mut StoryCtx, ac: &El, rels: &Rels) -> Option<InlineObject> {
-        let (choice, kind) = ac.children("mc:Choice").find_map(|c| {
+        // A requirement in a namespace we can't name couldn't be written back.
+        let keepable = |c: &&El| {
+            let requires = c.attr("Requires").unwrap_or("");
+            requires.split_whitespace().next().is_some() && requires.split_whitespace().all(|p| p != "?")
+        };
+        let (choice, kind) = ac.children("mc:Choice").filter(keepable).find_map(|c| {
             let gd = c.child("w:drawing").and_then(|d| d.find("a:graphicData"))?;
             if gd.attr("uri") == Some(CHARTEX_URI) {
                 Some((c, GraphicKind::Chart))
@@ -161,11 +166,6 @@ impl Reader<'_> {
                 None
             }
         })?;
-        // A requirement in a namespace we can't name couldn't be written back.
-        let requires = choice.attr("Requires").unwrap_or("");
-        if requires.split_whitespace().next().is_none() || requires.split_whitespace().any(|p| p == "?") {
-            return None;
-        }
         let fallback = ac.child("mc:Fallback")?;
         let kept = El { name: "mc:AlternateContent".into(), attrs: Vec::new(), kids: vec![Node::El(choice.clone()), Node::El(fallback.clone())] };
         let source = self.keep_embedded(&kept, rels, &[])?;
