@@ -604,3 +604,40 @@ fn undo_puts_the_caret_back_in_an_equation_kept_as_linear_text() {
     assert_eq!(linear(&s), "x+1");
     assert_eq!(caret_off(&s), 2, "caret back where it was, not at the start");
 }
+
+#[test]
+fn one_command_with_several_build_ups_undoes_them_one_at_a_time() {
+    // Review of fef571118: `1/2 x^2 z` in one call (an input method, MCP) kept only the last rewrite.
+    let mut s = session();
+    s.run("insert.equation", &json!({})).unwrap();
+    s.run("equation.type", &json!({"text": "1/2 x^2 z"})).unwrap();
+    let nodes = |s: &Session| nodes_of(s, &s.math.as_ref().unwrap().at).unwrap();
+    assert!(matches!(nodes(&s).as_slice(), [MNode::Frac { .. }, MNode::Script { .. }, MNode::Run(_)]), "{:#?}", nodes(&s));
+    s.run("edit.undo", &json!({})).unwrap();
+    assert!(matches!(nodes(&s).as_slice(), [MNode::Frac { .. }, MNode::Run(r)] if r.text == "x^2 z"), "{:#?}", nodes(&s));
+    assert_eq!(caret_off(&s), 6);
+    s.run("edit.undo", &json!({})).unwrap();
+    assert!(matches!(nodes(&s).as_slice(), [MNode::Run(r)] if r.text == "1/2 x^2 z"), "{:#?}", nodes(&s));
+    assert_eq!(caret_off(&s), 9);
+    s.run("edit.undo", &json!({})).unwrap();
+    assert!(nodes(&s).is_empty());
+}
+
+#[test]
+fn one_command_keeps_undo_steps_for_its_newest_rewrites_only() {
+    // Hostile input: thousands of build-ups in one call must not flood the undo history.
+    let mut s = session();
+    s.run("insert.equation", &json!({})).unwrap();
+    let depth = s.undo_depth();
+    s.run("equation.type", &json!({"text": "x^2 ".repeat(MAX_REWRITE_STEPS + 4)})).unwrap();
+    assert_eq!(s.undo_depth(), depth + 1 + MAX_REWRITE_STEPS, "the typing step plus one per kept rewrite");
+    for _ in 0..MAX_REWRITE_STEPS {
+        s.run("edit.undo", &json!({})).unwrap();
+    }
+    // The oldest kept step: the four earlier rewrites built, the rest as typed.
+    let nodes = nodes_of(&s, &s.math.as_ref().unwrap().at).unwrap();
+    assert_eq!(nodes.iter().filter(|n| matches!(n, MNode::Script { .. })).count(), 4, "{nodes:#?}");
+    assert!(matches!(nodes.last(), Some(MNode::Run(r)) if r.text.starts_with("x^2 ")), "{nodes:#?}");
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(linear(&s), "", "past the kept rewrites Undo returns to before the command");
+}
