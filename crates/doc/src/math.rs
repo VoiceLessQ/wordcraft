@@ -493,18 +493,31 @@ fn lin_arg(a: &[MNode], s: &mut String, depth: usize) {
     let mut open = false;
     // Whether the last item is text ending at a boundary, so a fraction or pre-script after it starts fresh.
     let mut fresh = true;
+    // Whether the last item is text ending in a function name, which would take the next item.
+    let mut named = false;
     for n in a {
         let mut piece = String::new();
         lin_node(n, &mut piece, depth + 1);
         // A bare trailing operand ends at a space: what follows is its own item.
         let after = open && piece.chars().next().is_some_and(absorbs);
-        if after || (!fresh && reaches_back(n)) {
+        if named && !piece.is_empty() {
+            // A function name takes the operand after one space; a second leaves it standalone.
+            s.push_str("  ");
+        } else if after || (!fresh && reaches_back(n)) {
             s.push(' ');
         }
         s.push_str(&piece);
         open = ends_in_operand(n) && piece.chars().next_back().is_some_and(absorbs);
         fresh = matches!(n, MNode::Run(r) if r.text.chars().next_back().is_some_and(|c| !absorbs(c) && c != '#'));
+        named = matches!(n, MNode::Run(r) if ends_in_function_name(&r.text));
     }
+}
+
+/// Whether `t` ends in letters the parser reads as a function name (`sin`, `xsin`).
+fn ends_in_function_name(t: &str) -> bool {
+    let letters = t.chars().rev().take_while(char::is_ascii_alphabetic).count();
+    let tail = t.get(t.len().saturating_sub(letters)..).unwrap_or("");
+    (0..tail.len()).any(|i| tail.get(i..).is_some_and(|w| crate::math_linear::FUNCTION_NAMES.contains(&w)))
 }
 
 /// Whether the parser builds `n` from what comes before it up to a boundary (`y` then `1/2` reads `(y1)/2`).
@@ -1169,8 +1182,8 @@ mod tests {
 
     #[test]
     fn any_two_items_read_back_as_written() {
-        // One of each kind, plus `(sin)` operands (#4733: 60 of these pairs read back changed).
-        let reps = "y 3 + 1/2 (a+b)/2 1/(sin) x^2 x_i x_i^2 _i^j▒x _i^j▒(sin) √x √(3&x) (x) [x] |x| sin\u{2061}x ∑_k^n▒k ∑▒k a┬b x\u{303} ¯a ▁a ▭a □a ⏟a █(a@b) ■(a&b@c&d) ⟡x 〖x〗";
+        // One of each kind, plus `(sin)` operands and a standalone function name (#4733, #4747).
+        let reps = "y 3 + sin 1/2 (a+b)/2 1/(sin) x^2 x_i x_i^2 _i^j▒x _i^j▒(sin) √x √(3&x) (x) [x] |x| sin\u{2061}x ∑_k^n▒k ∑▒k a┬b x\u{303} ¯a ▁a ▭a □a ⏟a █(a@b) ■(a&b@c&d) ⟡x 〖x〗";
         let reps: Vec<Arg> = reps.split(' ').map(parse_linear).collect();
         let mut bad = Vec::new();
         for a in &reps {
