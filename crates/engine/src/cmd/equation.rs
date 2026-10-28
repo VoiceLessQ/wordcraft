@@ -299,6 +299,14 @@ fn current(s: &Session) -> Result<MathEdit, CmdError> {
 /// state before the command, so hostile input can't flood the undo history.
 const MAX_REWRITE_STEPS: usize = 16;
 
+/// Adds a rewrite, dropping the oldest past `MAX_REWRITE_STEPS`.
+fn push_capped(rewrites: &mut Vec<(Arg, MathPos, usize)>, rewrite: (Arg, MathPos, usize)) {
+    if rewrites.len() == MAX_REWRITE_STEPS {
+        rewrites.remove(0);
+    }
+    rewrites.push(rewrite);
+}
+
 /// Caps typing at `MAX_EQUATION_TYPE_CHARS`; empty text is a classified no-op. Linear form
 /// inserts literal runs, while built-up form applies AutoCorrect and build-up before spaces and
 /// relational characters. Each rewrite (up to `MAX_REWRITE_STEPS`, the newest) gets an undo step
@@ -328,21 +336,21 @@ fn type_text(s: &mut Session, v: &Value) -> CmdResult {
             let rel = matches!(wordcraft_doc::math::math_class(c), wordcraft_doc::math::MClass::Rel);
             if !style.nor && (c == ' ' || c == '\t' || rel) {
                 let (before_nodes, before) = (math.nodes.clone(), pos.clone());
-                let mut changed = false;
-                if let Some(p) = me::autocorrect(&mut math.nodes, &pos) {
+                let corrected = me::autocorrect(&mut math.nodes, &pos).map(|p| {
                     pos = p;
-                    changed = true;
+                    (math.nodes.clone(), pos.clone())
+                });
+                let built = me::build_up(&mut math.nodes, &pos, latex);
+                if let Some(p) = &built {
+                    pos = p.clone();
                 }
-                if let Some(p) = me::build_up(&mut math.nodes, &pos, latex) {
-                    pos = p;
-                    changed = true;
-                }
-                if changed {
+                if corrected.is_some() || built.is_some() {
                     transformed = true;
-                    if rewrites.len() == MAX_REWRITE_STEPS {
-                        rewrites.remove(0);
+                    push_capped(&mut rewrites, (before_nodes, before, i));
+                    // AutoCorrect and a build-up on one trigger are two steps.
+                    if let (Some((nodes, p)), Some(_)) = (corrected, &built) {
+                        push_capped(&mut rewrites, (nodes, p, i));
                     }
-                    rewrites.push((before_nodes, before, i));
                     if c != ' ' {
                         pos = me::insert_text(&mut math.nodes, &pos, &c.to_string(), style);
                     }

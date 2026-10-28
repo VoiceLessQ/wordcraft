@@ -641,3 +641,19 @@ fn one_command_keeps_undo_steps_for_its_newest_rewrites_only() {
     s.run("edit.undo", &json!({})).unwrap();
     assert_eq!(linear(&s), "", "past the kept rewrites Undo returns to before the command");
 }
+
+#[test]
+fn autocorrect_and_build_up_on_one_space_undo_separately() {
+    // Review of 4d4a38f87: `\pm` then Space corrects to ± and builds a/b on the same key.
+    let mut s = session();
+    s.run("insert.equation", &json!({})).unwrap();
+    type_keys(&mut s, "a/b\\pm ");
+    let nodes = |s: &Session| nodes_of(s, &s.math.as_ref().unwrap().at).unwrap();
+    assert!(matches!(nodes(&s).as_slice(), [MNode::Frac { .. }, MNode::Run(r)] if r.text == "±"), "{:#?}", nodes(&s));
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(linear(&s), "a/b± ", "Undo takes back the build-up first");
+    assert_eq!(caret_off(&s), 5);
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(linear(&s), "a/b\\pm ", "then the AutoCorrect");
+    assert_eq!(caret_off(&s), 7);
+}
