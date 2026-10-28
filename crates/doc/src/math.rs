@@ -565,15 +565,15 @@ fn lin_script(a: &[MNode], s: &mut String, depth: usize) {
     lin_operand(a, s, depth);
 }
 
-/// A fraction's denominator. A bare function name would take what follows as its argument.
-fn lin_denominator(den: &[MNode], s: &mut String, depth: usize) {
-    match den {
+/// A structure's trailing operand. A bare function name would take what follows as its argument.
+fn lin_trailing(e: &[MNode], s: &mut String, depth: usize) {
+    match e {
         [MNode::Run(r)] if crate::math_linear::FUNCTION_NAMES.contains(&r.text.as_str()) => {
             s.push('(');
             s.push_str(&r.text);
             s.push(')');
         }
-        _ => lin_operand(den, s, depth),
+        _ => lin_operand(e, s, depth),
     }
 }
 
@@ -588,7 +588,7 @@ fn lin_node(n: &MNode, s: &mut String, depth: usize) {
                 FracKind::NoBar => '¦',
                 FracKind::Bar => '/',
             });
-            lin_denominator(den, s, depth);
+            lin_trailing(den, s, depth);
         }
         MNode::Script { kind, base, sub, sup } => {
             if *kind == ScriptKind::Pre {
@@ -613,7 +613,7 @@ fn lin_node(n: &MNode, s: &mut String, depth: usize) {
         MNode::Rad { deg, deg_hide, e } => {
             if *deg_hide || deg.is_empty() {
                 s.push('√');
-                lin_operand(e, s, depth);
+                lin_trailing(e, s, depth);
             } else {
                 s.push_str("√(");
                 lin_arg(deg, s, depth);
@@ -633,7 +633,7 @@ fn lin_node(n: &MNode, s: &mut String, depth: usize) {
                 lin_script(sup, s, depth);
             }
             s.push('▒');
-            lin_operand(e, s, depth);
+            lin_trailing(e, s, depth);
         }
         MNode::Delim { beg, end, elems, .. } => {
             // A standard pair writes as itself; anything else uses explicit `├X … Y┤`.
@@ -665,7 +665,7 @@ fn lin_node(n: &MNode, s: &mut String, depth: usize) {
         MNode::Func { name, e } => {
             lin_arg(name, s, depth);
             s.push('\u{2061}');
-            lin_operand(e, s, depth);
+            lin_trailing(e, s, depth);
         }
         MNode::Lim { upper, e, lim } => {
             lin_operand(e, s, depth);
@@ -678,19 +678,19 @@ fn lin_node(n: &MNode, s: &mut String, depth: usize) {
         }
         MNode::Bar { top, e } => {
             s.push(if *top { '¯' } else { '▁' });
-            lin_operand(e, s, depth);
+            lin_trailing(e, s, depth);
         }
         MNode::BorderBox { e, .. } => {
             s.push('▭');
-            lin_operand(e, s, depth);
+            lin_trailing(e, s, depth);
         }
         MNode::Boxed { e } => {
             s.push('□');
-            lin_operand(e, s, depth);
+            lin_trailing(e, s, depth);
         }
         MNode::GroupChr { chr, e, .. } => {
             s.push(*chr);
-            lin_operand(e, s, depth);
+            lin_trailing(e, s, depth);
         }
         // A numbered equation (`E=mc^2#(1)`) is written as its one row.
         MNode::EqArr { rows } if rows.len() == 1 && rows.first().is_some_and(|r| has_number_mark(r)) => {
@@ -1130,6 +1130,24 @@ mod tests {
         ] {
             let lin = to_linear(&n);
             assert_eq!(parse_linear(&lin), n, "{lin}");
+        }
+        // CodeRabbit on #4717: a bare function name as any trailing operand would take what follows.
+        let sin = || vec![MNode::Run(MRun::plain("sin"))];
+        for k in [
+            MNode::Rad { deg: vec![], deg_hide: true, e: sin() },
+            MNode::Bar { top: true, e: sin() },
+            MNode::BorderBox { hide: [false; 4], strike: [false; 4], e: sin() },
+            MNode::Boxed { e: sin() },
+            MNode::GroupChr { chr: '⏟', top: false, e: sin() },
+            MNode::Nary { chr: '∑', sub_hide: true, sup_hide: true, sub: vec![], sup: vec![], e: sin(), lim_loc: None, grow: false },
+            MNode::Func { name: vec![MNode::Run(MRun::plain("cos"))], e: sin() },
+            MNode::Script { kind: ScriptKind::Sup, base: vec![run("y")], sub: vec![], sup: sin() },
+            MNode::Lim { upper: false, e: vec![run("a")], lim: sin() },
+        ] {
+            for n in [vec![k.clone()], vec![k, x2.clone()]] {
+                let lin = to_linear(&n);
+                assert_eq!(parse_linear(&lin), n, "{lin}");
+            }
         }
         assert_eq!(to_linear(&[half.clone(), x2]), "1/2 x^2");
         assert_eq!(to_linear(&[half, run("+")]), "1/2+");
