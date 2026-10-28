@@ -575,6 +575,39 @@ fn text_before_an_inserted_fraction_stays_outside_it() {
 }
 
 #[test]
+fn moving_the_equation_caret_ends_the_typing_step() {
+    // Arrow keys in an equation left `sel` alone, so one ⌘Z took back typing on both sides.
+    let mut s = session();
+    s.run("insert.equation", &json!({})).unwrap();
+    type_keys(&mut s, "ab");
+    s.run("equation.move", &json!({"dir": "left"})).unwrap();
+    type_keys(&mut s, "c");
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(linear(&s), "ab");
+    assert_eq!(caret_off(&s), 1);
+    // A read-only command in between keeps typing one step.
+    type_keys(&mut s, "d");
+    s.run("equation.get", &json!({})).unwrap();
+    type_keys(&mut s, "e");
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(linear(&s), "ab");
+    // #4733's steps: each slot's typing is its own step.
+    let mut s = session();
+    s.run("insert.equation", &json!({})).unwrap();
+    type_keys(&mut s, "y");
+    s.run("equation.insertStructure", &json!({"id": "frac.stacked"})).unwrap();
+    type_keys(&mut s, "1");
+    s.run("equation.move", &json!({"dir": "down"})).unwrap();
+    type_keys(&mut s, "2");
+    s.run("equation.move", &json!({"dir": "right"})).unwrap();
+    type_keys(&mut s, "+3");
+    for want in ["y 1/2", "y 1/()", "y ()/()"] {
+        s.run("edit.undo", &json!({})).unwrap();
+        assert_eq!(linear(&s), want);
+    }
+}
+
+#[test]
 fn undo_takes_back_one_build_up_at_a_time() {
     // Discord report: Ctrl+Z after a build-up removed the whole equation's typing.
     let mut s = session();
