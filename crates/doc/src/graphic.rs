@@ -71,6 +71,8 @@ pub enum GraphicKind {
     Diagram,
     /// Word's native InkML, kept opaque; displayed as its fallback picture when available.
     Ink,
+    /// A 3D model (`am3d:model3d` and its glTF part), kept opaque; displayed as its picture.
+    Model3d,
 }
 
 impl GraphicKind {
@@ -80,6 +82,7 @@ impl GraphicKind {
             GraphicKind::Chart => "chart",
             GraphicKind::Diagram => "diagram",
             GraphicKind::Ink => "ink",
+            GraphicKind::Model3d => "3D model",
         }
     }
 }

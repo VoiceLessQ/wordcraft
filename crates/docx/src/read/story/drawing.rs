@@ -64,7 +64,7 @@ impl Reader<'_> {
             // Kept so saving writes the chart or diagram back: the frame around it is written
             // from the object's (possibly moved or resized) size and position.
             let extra: Vec<String> = match kind {
-                GraphicKind::Chart | GraphicKind::Ink => Vec::new(),
+                GraphicKind::Chart | GraphicKind::Ink | GraphicKind::Model3d => Vec::new(),
                 GraphicKind::Diagram => self.diagram_drawing_rel(gd, rels).into_iter().collect(),
             };
             let source = c.child("a:graphic").and_then(|g| self.keep_embedded(g, rels, &extra));
@@ -146,13 +146,21 @@ impl Reader<'_> {
         Some(object)
     }
 
-    /// An Office 2016 chart (`cx:chart`: waterfall, sunburst, box & whisker…) drawn from its
-    /// fallback picture, keeping both branches so saving writes the chart back rather than only
-    /// the picture. `None` (read the fallback alone) when it can't be kept whole.
-    pub(super) fn read_chartex_alternate(&mut self, sc: &mut StoryCtx, ac: &El, rels: &Rels) -> Option<InlineObject> {
-        let choice = ac
-            .children("mc:Choice")
-            .find(|c| c.child("w:drawing").and_then(|d| d.find("a:graphicData")).and_then(|g| g.attr("uri")) == Some(CHARTEX_URI))?;
+    /// An Office 2016 chart (`cx:chart`: waterfall, sunburst, box & whisker…) or a 3D model
+    /// (`am3d:model3d`) drawn from its fallback picture, keeping both branches so saving writes
+    /// the chart or model back rather than only the picture. `None` (read the fallback alone)
+    /// when it can't be kept whole.
+    pub(super) fn read_kept_alternate(&mut self, sc: &mut StoryCtx, ac: &El, rels: &Rels) -> Option<InlineObject> {
+        let (choice, kind) = ac.children("mc:Choice").find_map(|c| {
+            let gd = c.child("w:drawing").and_then(|d| d.find("a:graphicData"))?;
+            if gd.attr("uri") == Some(CHARTEX_URI) {
+                Some((c, GraphicKind::Chart))
+            } else if gd.child("am3d:model3d").is_some() {
+                Some((c, GraphicKind::Model3d))
+            } else {
+                None
+            }
+        })?;
         // A requirement in a namespace we can't name couldn't be written back.
         let requires = choice.attr("Requires").unwrap_or("");
         if requires.split_whitespace().next().is_none() || requires.split_whitespace().any(|p| p == "?") {
@@ -165,7 +173,7 @@ impl Reader<'_> {
             return None;
         };
         let items = vec![GraphicItem::Image { rect: [0.0, 0.0, w, h], media }];
-        let graphic = Arc::new(Graphic { kind: GraphicKind::Chart, items, w, h, source: Some(source), ..Default::default() });
+        let graphic = Arc::new(Graphic { kind, items, w, h, source: Some(source), ..Default::default() });
         Some(InlineObject::Graphic { w, h, alt, float, graphic })
     }
 
@@ -211,7 +219,7 @@ impl Reader<'_> {
         let part = match kind {
             GraphicKind::Chart => gd.child("c:chart").and_then(|c| c.attr("r:id")).and_then(|id| crate::read::part_of(rels, id, rt::CHART)),
             GraphicKind::Diagram => self.diagram_part(gd, rels),
-            GraphicKind::Ink => None,
+            GraphicKind::Ink | GraphicKind::Model3d => None,
         };
         let Some(path) = part else { return Arc::new(Graphic { kind, items: Vec::new(), w, h, source, chart: None, smart_art: None }) };
         let key = (kind, path, w.to_bits(), h.to_bits());
@@ -244,7 +252,7 @@ impl Reader<'_> {
                 None => Vec::new(),
             },
             GraphicKind::Diagram => self.diagram_drawing(path, w, h),
-            GraphicKind::Ink => Vec::new(),
+            GraphicKind::Ink | GraphicKind::Model3d => Vec::new(),
         }
     }
 
