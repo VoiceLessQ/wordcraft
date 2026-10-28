@@ -554,6 +554,27 @@ fn text_after_a_built_fraction_stays_outside_it() {
 }
 
 #[test]
+fn text_before_an_inserted_fraction_stays_outside_it() {
+    // #4733: `y`, a stacked fraction 1 over 2, then `+3` Space read back as (y1)/2+3.
+    let mut s = session();
+    s.run("insert.equation", &json!({})).unwrap();
+    s.run("equation.type", &json!({"text": "y"})).unwrap();
+    s.run("equation.insertStructure", &json!({"id": "frac.stacked"})).unwrap();
+    s.run("equation.type", &json!({"text": "1"})).unwrap();
+    s.run("equation.move", &json!({"dir": "down"})).unwrap();
+    s.run("equation.type", &json!({"text": "2"})).unwrap();
+    s.run("equation.move", &json!({"dir": "right"})).unwrap();
+    type_keys(&mut s, "+3 ");
+    let nodes = nodes_of(&s, &s.math.as_ref().unwrap().at).unwrap();
+    let is = |a: &[MNode], t: &str| matches!(a, [MNode::Run(r)] if r.text == t);
+    assert!(
+        matches!(nodes.as_slice(), [MNode::Run(y), MNode::Frac { num, den, .. }, MNode::Run(rest)]
+        if y.text == "y" && is(num, "1") && is(den, "2") && rest.text == "+3 "),
+        "{nodes:#?}"
+    );
+}
+
+#[test]
 fn undo_takes_back_one_build_up_at_a_time() {
     // Discord report: Ctrl+Z after a build-up removed the whole equation's typing.
     let mut s = session();

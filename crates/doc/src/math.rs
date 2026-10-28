@@ -491,16 +491,25 @@ fn lin_arg(a: &[MNode], s: &mut String, depth: usize) {
     let absorbs = |c: char| !crate::math_linear::is_boundary(c);
     // Whether the last item ends in a bare operand the next item's first character would extend.
     let mut open = false;
+    // Whether the last item is text ending at a boundary, so a fraction or pre-script after it starts fresh.
+    let mut fresh = true;
     for n in a {
         let mut piece = String::new();
         lin_node(n, &mut piece, depth + 1);
         // A bare trailing operand ends at a space: what follows is its own item.
-        if open && piece.chars().next().is_some_and(absorbs) {
+        let after = open && piece.chars().next().is_some_and(absorbs);
+        if after || (!fresh && reaches_back(n)) {
             s.push(' ');
         }
         s.push_str(&piece);
         open = ends_in_operand(n) && piece.chars().next_back().is_some_and(absorbs);
+        fresh = matches!(n, MNode::Run(r) if r.text.chars().next_back().is_some_and(|c| !absorbs(c) && c != '#'));
     }
+}
+
+/// Whether the parser builds `n` from what comes before it up to a boundary (`y` then `1/2` reads `(y1)/2`).
+fn reaches_back(n: &MNode) -> bool {
+    matches!(n, MNode::Frac { .. } | MNode::Script { kind: ScriptKind::Pre, .. })
 }
 
 /// Whether `n` is written ending in an operand the parser would extend (`1/2` then `x` reads `1/(2x)`).
@@ -1156,6 +1165,28 @@ mod tests {
         }
         assert_eq!(to_linear(&[half.clone(), x2]), "1/2 x^2");
         assert_eq!(to_linear(&[half, run("+")]), "1/2+");
+    }
+
+    #[test]
+    fn any_two_items_read_back_as_written() {
+        // One of each kind, plus `(sin)` operands (#4733: 60 of these pairs read back changed).
+        let reps = "y 3 + 1/2 (a+b)/2 1/(sin) x^2 x_i x_i^2 _i^j▒x _i^j▒(sin) √x √(3&x) (x) [x] |x| sin\u{2061}x ∑_k^n▒k ∑▒k a┬b x\u{303} ¯a ▁a ▭a □a ⏟a █(a@b) ■(a&b@c&d) ⟡x 〖x〗";
+        let reps: Vec<Arg> = reps.split(' ').map(parse_linear).collect();
+        let mut bad = Vec::new();
+        for a in &reps {
+            assert_eq!(&parse_linear(&to_linear(a)), a, "{}", to_linear(a));
+            for b in &reps {
+                // Two runs side by side are one run.
+                if matches!((a.last(), b.first()), (Some(MNode::Run(_)), Some(MNode::Run(_)))) {
+                    continue;
+                }
+                let n: Arg = a.iter().chain(b).cloned().collect();
+                if parse_linear(&to_linear(&n)) != n {
+                    bad.push(format!("{} + {} -> {}", to_linear(a), to_linear(b), to_linear(&n)));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{} of {} pairs:\n{}", bad.len(), reps.len() * reps.len(), bad.join("\n"));
     }
 
     #[test]
