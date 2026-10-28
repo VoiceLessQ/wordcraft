@@ -447,7 +447,7 @@ pub(super) fn write_blocks(blocks: &[FBlock], out: &mut Vec<String>) {
                         } else {
                             let item = |b: String| escape_lines(b).replace("\\\n", &format!("\\\n{cont}"));
                             let lines = item_lines(&p.inlines);
-                            let body = if lines.len() > 1 {
+                            let body = if lines.len() > 1 || lines.first().is_some_and(|l| *l != p.inlines) {
                                 lines.iter().map(|l| item(inlines_md(l))).collect::<Vec<_>>().join(&format!("\n{cont}"))
                             } else {
                                 item(body)

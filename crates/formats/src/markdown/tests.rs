@@ -728,4 +728,12 @@ fn list_item_display_equations_keep_their_own_line() {
     let p = Para { list: Some(ListInfo { ordered: false, level: 0, start: 1 }), inlines, ..Default::default() };
     let md = export(&model::to_doc(&model::Flow { blocks: vec![FBlock::Para(p)], ..Default::default() }));
     assert!(para_texts(&model::from_doc(&import(&md))).iter().all(|t| !t.contains('\\')), "{md:?}");
+    // A break next to an item's only equation still gives a `$$` line.
+    let eq = Inline::Equation { linear: "x".into(), display: true };
+    let br = Inline::Text("\n".into(), Fmt::default());
+    for inlines in [vec![eq.clone(), br.clone()], vec![br, eq]] {
+        let p = Para { list: Some(ListInfo { ordered: false, level: 0, start: 1 }), inlines, ..Default::default() };
+        let md = export(&model::to_doc(&model::Flow { blocks: vec![FBlock::Para(p)], ..Default::default() }));
+        assert_eq!(md, "- $$x$$\n");
+    }
 }
