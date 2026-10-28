@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::control::{self, MAX_CONTROL_NESTING};
 use crate::para::{InlineObject, Run};
 use crate::props::{CharProps, ParaProps};
 use crate::{Block, Blocks, DocError, Document, Paragraph, Part, PartKind, Path, Pos, Result, para_block};
@@ -956,9 +957,21 @@ impl Document {
         if self.para_at(pos).is_none() {
             return Err(DocError::BadPath(pos.path.to_string()));
         }
+        // Controls that would nest deeper than the limit here lose their markers, keeping their
+        // content (#3618).
+        let room = MAX_CONTROL_NESTING.saturating_sub(self.control_nesting(pos, pos));
+        let mut bl: Blocks = blocks.into_iter().map(Arc::new).collect();
+        let mut own = None;
+        if control::nesting_peak(&bl, &frag.parts) > room {
+            let mut parts = frag.parts.clone();
+            control::trim_nesting(&mut bl, &mut parts, room);
+            own = Some(parts);
+        }
+        let parts = own.as_ref().unwrap_or(&frag.parts);
+        let mut blocks: Vec<Block> = bl.into_iter().map(|b| Arc::try_unwrap(b).unwrap_or_else(|a| (*a).clone())).collect();
         // Pasted text boxes get stories of their own (never shared with the copy's source).
         let mut budget = BoxBudget::new();
-        self.adopt_text_boxes(&mut blocks, &frag.parts, 0, &mut budget);
+        self.adopt_text_boxes(&mut blocks, parts, 0, &mut budget);
         if budget.skipped > 0 {
             // Once per paste, not once per box (review of #3874).
             log::warn!(
