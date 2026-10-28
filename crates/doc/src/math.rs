@@ -506,16 +506,17 @@ fn lin_arg(a: &[MNode], s: &mut String, depth: usize) {
 /// Whether `n` is written ending in an operand the parser would extend (`1/2` then `x` reads `1/(2x)`).
 fn ends_in_operand(n: &MNode) -> bool {
     match n {
-        MNode::Script { kind, .. } => *kind != ScriptKind::Pre,
         MNode::Rad { deg, deg_hide, .. } => *deg_hide || deg.is_empty(),
-        MNode::Lim { .. }
+        MNode::Script { .. }
+        | MNode::Lim { .. }
         | MNode::Frac { .. }
         | MNode::Nary { .. }
         | MNode::Func { .. }
         | MNode::Bar { .. }
         | MNode::BorderBox { .. }
         | MNode::Boxed { .. }
-        | MNode::GroupChr { .. } => true,
+        | MNode::GroupChr { .. }
+        | MNode::Phant { .. } => true,
         _ => false,
     }
 }
@@ -597,7 +598,7 @@ fn lin_node(n: &MNode, s: &mut String, depth: usize) {
                 s.push('^');
                 lin_script(sup, s, depth);
                 s.push('▒');
-                lin_operand(base, s, depth);
+                lin_trailing(base, s, depth);
                 return;
             }
             lin_operand(base, s, depth);
@@ -725,7 +726,7 @@ fn lin_node(n: &MNode, s: &mut String, depth: usize) {
         }
         MNode::Phant { e, .. } => {
             s.push('⟡');
-            lin_operand(e, s, depth);
+            lin_trailing(e, s, depth);
         }
     }
 }
@@ -1143,8 +1144,12 @@ mod tests {
             MNode::Func { name: vec![MNode::Run(MRun::plain("cos"))], e: sin() },
             MNode::Script { kind: ScriptKind::Sup, base: vec![run("y")], sub: vec![], sup: sin() },
             MNode::Lim { upper: false, e: vec![run("a")], lim: sin() },
-        ] {
-            for n in [vec![k.clone()], vec![k, x2.clone()]] {
+        ]
+        .into_iter()
+        // Phantoms and pre-scripts end in an operand too (review of fef571118).
+        .chain(["⟡x", "⟡(sin)", "_i^j▒x", "_i^j▒(sin)"].iter().flat_map(|t| parse_linear(t)))
+        {
+            for n in [vec![k.clone()], vec![k.clone(), x2.clone()], vec![k, run("y")]] {
                 let lin = to_linear(&n);
                 assert_eq!(parse_linear(&lin), n, "{lin}");
             }
