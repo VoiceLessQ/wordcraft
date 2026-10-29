@@ -596,71 +596,17 @@ fn walk<'a>(ctx: &WalkCtx<'a>, cp_start: u32, cp_end: u32, pics: &mut media::Pic
             }
             // Field begin/separator/end ([MS-DOC] §2.9.84 Plcfld).
             '\u{13}' => {
-                let full = fields.len() >= MAX_FIELD_NEST;
-                match fields.last_mut() {
-                    Some(f) if f.over_hidden > 0 => f.over_hidden = f.over_hidden.saturating_add(1),
-                    Some(f) if f.sep.is_none() && !f.range => f.depth = f.depth.saturating_add(1),
-                    // Past the cap, a field in a result is counted, not kept: its code is
-                    // hidden and its result shows in the innermost kept field.
-                    Some(f) if full => f.over_hidden = 1,
-                    _ => fields.push(FieldBuild { depth: 1, instr: String::new(), sep: None, range: false, over_hidden: 0, over_shown: 0 }),
-                }
+                field_begin(&mut fields);
                 cp = cp.saturating_add(1);
                 continue;
             }
             '\u{14}' => {
-                if let Some(f) = fields.last_mut()
-                    && f.over_hidden > 0
-                {
-                    // The separator of the innermost counted field: its result follows.
-                    if f.over_hidden == 1 {
-                        f.over_hidden = 0;
-                        f.over_shown = f.over_shown.saturating_add(1);
-                    }
-                } else if let Some(f) = fields.last_mut()
-                    && f.depth == 1
-                    && f.sep.is_none()
-                    && !f.range
-                    && f.over_shown == 0
-                {
-                    if is_range_instr(&f.instr) {
-                        // A table of contents keeps its entries as ordinary paragraphs between
-                        // markers, as the DOCX reader does.
-                        f.range = true;
-                        push_field_start(&mut pb, &f.instr);
-                    } else {
-                        f.sep = Some(Vec::new());
-                    }
-                }
+                field_separator(&mut fields, &mut pb);
                 cp = cp.saturating_add(1);
                 continue;
             }
             '\u{15}' => {
-                if let Some(f) = fields.last_mut()
-                    && (f.over_hidden > 0 || f.over_shown > 0)
-                {
-                    if f.over_hidden > 0 {
-                        f.over_hidden -= 1;
-                    } else {
-                        f.over_shown -= 1;
-                    }
-                } else if let Some(mut f) = fields.pop() {
-                    if f.depth > 1 {
-                        f.depth -= 1;
-                        fields.push(f);
-                    } else if f.range {
-                        push_field_end(&mut pb);
-                    } else if f.sep.is_none() && is_range_instr(&f.instr) {
-                        push_field_start(&mut pb, &f.instr);
-                        push_field_end(&mut pb);
-                    } else {
-                        match fields.last_mut().filter(|o| !o.range).and_then(|o| o.sep.as_mut()) {
-                            // A field in another field's kept result shows its own result there.
-                            Some(outer) => outer.extend(f.sep.unwrap_or_default()),
-                            None => finish_field(&mut pb, f, ctx.work),
-                        }
-                    }
-                }
+                field_end(&mut fields, &mut pb, ctx.work);
                 cp = cp.saturating_add(1);
                 continue;
             }
@@ -757,6 +703,75 @@ const MAX_FIELD_NEST: usize = 32;
 fn is_range_instr(instr: &str) -> bool {
     let t = instr.trim_start();
     t.split_whitespace().next().is_some_and(|k| k.eq_ignore_ascii_case("TOC")) || t.get(..5).is_some_and(|k| k.eq_ignore_ascii_case("ADDIN"))
+}
+
+/// A field begin (0x13): a new field, or one more level in the innermost field's code.
+fn field_begin(fields: &mut Vec<FieldBuild>) {
+    let full = fields.len() >= MAX_FIELD_NEST;
+    match fields.last_mut() {
+        Some(f) if f.over_hidden > 0 => f.over_hidden = f.over_hidden.saturating_add(1),
+        Some(f) if f.sep.is_none() && !f.range => f.depth = f.depth.saturating_add(1),
+        // Past the cap, a field in a result is counted, not kept: its code is
+        // hidden and its result shows in the innermost kept field.
+        Some(f) if full => f.over_hidden = 1,
+        _ => fields.push(FieldBuild { depth: 1, instr: String::new(), sep: None, range: false, over_hidden: 0, over_shown: 0 }),
+    }
+}
+
+/// A field separator (0x14): the innermost field's result follows.
+fn field_separator(fields: &mut [FieldBuild], pb: &mut ParaBuild) {
+    if let Some(f) = fields.last_mut()
+        && f.over_hidden > 0
+    {
+        // The separator of the innermost counted field: its result follows.
+        if f.over_hidden == 1 {
+            f.over_hidden = 0;
+            f.over_shown = f.over_shown.saturating_add(1);
+        }
+    } else if let Some(f) = fields.last_mut()
+        && f.depth == 1
+        && f.sep.is_none()
+        && !f.range
+        && f.over_shown == 0
+    {
+        if is_range_instr(&f.instr) {
+            // A table of contents keeps its entries as ordinary paragraphs between
+            // markers, as the DOCX reader does.
+            f.range = true;
+            push_field_start(pb, &f.instr);
+        } else {
+            f.sep = Some(Vec::new());
+        }
+    }
+}
+
+/// A field end (0x15): the innermost field closes, into its outer field's result or the paragraph.
+fn field_end(fields: &mut Vec<FieldBuild>, pb: &mut ParaBuild, work: &Work) {
+    if let Some(f) = fields.last_mut()
+        && (f.over_hidden > 0 || f.over_shown > 0)
+    {
+        if f.over_hidden > 0 {
+            f.over_hidden -= 1;
+        } else {
+            f.over_shown -= 1;
+        }
+    } else if let Some(mut f) = fields.pop() {
+        if f.depth > 1 {
+            f.depth -= 1;
+            fields.push(f);
+        } else if f.range {
+            push_field_end(pb);
+        } else if f.sep.is_none() && is_range_instr(&f.instr) {
+            push_field_start(pb, &f.instr);
+            push_field_end(pb);
+        } else {
+            match fields.last_mut().filter(|o| !o.range).and_then(|o| o.sep.as_mut()) {
+                // A field in another field's kept result shows its own result there.
+                Some(outer) => outer.extend(f.sep.unwrap_or_default()),
+                None => finish_field(pb, f, work),
+            }
+        }
+    }
 }
 
 fn push_field_start(pb: &mut ParaBuild, instr: &str) {
