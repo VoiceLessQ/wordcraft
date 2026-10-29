@@ -651,3 +651,81 @@ fn control_markers_kept_are_sorted() {
         assert!(kept.windows(2).all(|p| p[0] < p[1]), "sorted, no repeats: {kept:?}");
     }
 }
+
+/// Shapes sharing a story don't multiply the walk: 160^4 walks took 76 s (review of #4697).
+#[test]
+fn nesting_walks_each_shared_text_box_story_once() {
+    let k = 160;
+    let shape = |story| InlineObject::Shape {
+        kind: para::ShapeKind::TextBox,
+        w: 144.0,
+        h: 72.0,
+        fill: None,
+        stroke: None,
+        stroke_width: 0.75,
+        float: Default::default(),
+        story: Some(story),
+        freeform: None,
+        effects: Default::default(),
+        extra: Default::default(),
+    };
+    let wrapped = |objs: Vec<InlineObject>| {
+        let mut all = vec![InlineObject::ControlStart { control: Box::default() }];
+        all.extend(objs);
+        all.push(InlineObject::ControlEnd);
+        vec![Arc::new(Block::Para(para_of_objects(all)))]
+    };
+    let mut d = Document::new();
+    let mut inner = d.add_part(PartKind::TextBox, wrapped(Vec::new()));
+    for _ in 0..3 {
+        inner = d.add_part(PartKind::TextBox, wrapped((0..k).map(|_| shape(inner)).collect()));
+    }
+    d.body = wrapped((0..k).map(|_| shape(inner)).collect());
+    let t = std::time::Instant::now();
+    // One control in the body and one in each of the four stories.
+    assert_eq!(control::nesting_peak(&d.body, &d.parts), 5);
+    assert_eq!(d.control_nesting(&d.start_of(StoryRef::Body), &d.end_of(StoryRef::Body)), 5);
+    assert!(t.elapsed().as_secs_f32() < 10.0, "{:?}", t.elapsed());
+}
+
+/// A shared story is trimmed to the room at its deepest shape, not its first (review of #4697).
+#[test]
+fn trimmed_nesting_counts_every_shape_of_a_shared_story() {
+    let shape = |story| InlineObject::Shape {
+        kind: para::ShapeKind::TextBox,
+        w: 144.0,
+        h: 72.0,
+        fill: None,
+        stroke: None,
+        stroke_width: 0.75,
+        float: Default::default(),
+        story: Some(story),
+        freeform: None,
+        effects: Default::default(),
+        extra: Default::default(),
+    };
+    let nested = |n: usize, mid: Vec<InlineObject>| {
+        let mut all: Vec<InlineObject> = (0..n).map(|_| InlineObject::ControlStart { control: Box::default() }).collect();
+        all.extend(mid);
+        all.extend((0..n).map(|_| InlineObject::ControlEnd));
+        vec![Arc::new(Block::Para(para_of_objects(all)))]
+    };
+    let mut d = Document::new();
+    let shared = d.add_part(PartKind::TextBox, nested(30, Vec::new()));
+    let outer = d.add_part(PartKind::TextBox, nested(50, vec![shape(shared)]));
+    d.body = nested(0, vec![shape(shared), shape(outer)]);
+    let (mut bl, mut parts) = (d.body.clone(), d.parts.clone());
+    control::trim_nesting(&mut bl, &mut parts, control::MAX_CONTROL_NESTING);
+    // 50 around the shared box's shape leave it 14 of its 30 (80 before).
+    assert_eq!(control::nesting_peak(&bl, &parts), control::MAX_CONTROL_NESTING);
+
+    // Picking the next story used to search them all: 57 s for these 50,000.
+    let n = 50_000;
+    let ids: Vec<u32> = (0..n).map(|_| d.add_part(PartKind::TextBox, nested(1, Vec::new()))).collect();
+    d.body = nested(0, ids.iter().map(|&i| shape(i)).collect());
+    let (mut bl, mut parts) = (d.body.clone(), d.parts.clone());
+    let t = std::time::Instant::now();
+    assert_eq!(control::trim_nesting(&mut bl, &mut parts, 0), n);
+    assert_eq!(control::nesting_peak(&bl, &parts), 0);
+    assert!(t.elapsed().as_secs_f32() < 10.0, "{:?}", t.elapsed());
+}
