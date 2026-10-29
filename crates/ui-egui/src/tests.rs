@@ -4782,6 +4782,31 @@ fn turning_autosave_on_covers_a_file_only_opened_here() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `file.open` with `data` only names the file: the switch mustn't let AutoSave write a file of
+/// that name, which may hold something else entirely.
+#[test]
+fn the_autosave_switch_refuses_a_document_opened_from_bytes() {
+    let dir = scratch("autosave-bytes");
+    let path = dir.join("other.docx");
+    let mut a = typed();
+    a.run("file.save", json!({"path": path.to_string_lossy()})).unwrap();
+    let on_disk = std::fs::read(&path).unwrap();
+    let mut b = app();
+    let data = wordcraft_engine::cmd::insert::base64_encode(&on_disk);
+    b.execute("file.open", json!({"path": path.to_string_lossy(), "data": data})).unwrap();
+    assert_eq!(b.autosave_block(), Some(AutoSaveBlock::NotSavedHere));
+    assert!(b.run("file.autosave", json!({"value": true})).is_err());
+    assert!(b.run("file.autosave", json!({})).is_err(), "the switch refuses too");
+    b.run("text.insert", json!({"text": "Bytes "})).unwrap();
+    b.autosave_tick(now_ms() + 10_000.0);
+    assert!(b.session.dirty);
+    assert_eq!(std::fs::read(&path).unwrap(), on_disk, "the named file is untouched");
+    // Saving is still the way: then AutoSave covers the file.
+    b.run("file.save", json!({})).unwrap();
+    assert!(b.autosaves());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Cancelling the Open picker (Mod+O) left the document as it was but turned AutoSave off.
 #[test]
 fn cancelling_open_keeps_autosave() {

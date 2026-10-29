@@ -245,13 +245,8 @@ impl WordApp {
             self.recovery_seen = true;
             self.sync_document();
         }
-        // An explicit save to the document's own file lets AutoSave keep writing there.
-        if let Ok(v) = &r
-            && matches!(id, "file.save" | "file.saveAs")
-            && v.get("saved").and_then(Value::as_bool) == Some(true)
-            && v.get("path").and_then(Value::as_str).map(std::path::Path::new) == self.session.path.as_deref()
-        {
-            self.autosave_path = self.session.path.clone();
+        if let Ok(v) = &r {
+            self.note_file_on_disk(id, &params, v);
         }
         // A renamed file is the same file: AutoSave keeps covering it, and Recent drops the old name.
         if r.is_ok()
@@ -260,6 +255,9 @@ impl WordApp {
         {
             if self.autosave_path.as_ref() == Some(&old) {
                 self.autosave_path = self.session.path.clone();
+            }
+            if self.read_from.as_ref() == Some(&old) {
+                self.read_from = self.session.path.clone();
             }
             let old = old.to_string_lossy();
             self.ui.recent.retain(|r| *r != old);
@@ -326,6 +324,23 @@ impl WordApp {
             return Ok(json!({"pending": "password"}));
         }
         r
+    }
+
+    /// Which file on disk the document is in, after `file.save`, `file.saveAs` or `file.open`.
+    fn note_file_on_disk(&mut self, id: &str, params: &Value, v: &Value) {
+        // An explicit save to the document's own file lets AutoSave keep writing there.
+        if matches!(id, "file.save" | "file.saveAs")
+            && v.get("saved").and_then(Value::as_bool) == Some(true)
+            && v.get("path").and_then(Value::as_str).map(std::path::Path::new) == self.session.path.as_deref()
+        {
+            self.autosave_path = self.session.path.clone();
+            self.read_from = self.session.path.clone();
+        }
+        // A file read from disk may have AutoSave turned on for it; one opened from bytes only
+        // names a file it never read.
+        if id == "file.open" && params.get("path").is_some() && v.get("alreadyOpen").and_then(Value::as_bool) != Some(true) {
+            self.read_from = if params.get("data").is_some() { None } else { self.session.path.clone() };
+        }
     }
 
     fn after_command(&mut self, id: &str) {

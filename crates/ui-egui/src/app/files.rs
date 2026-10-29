@@ -388,7 +388,8 @@ impl WordApp {
     /// `file.autosave` (the AutoSave switch, and scripts): `value` turns AutoSave on or off;
     /// without it, it toggles what the switch shows. Turning it on for a document AutoSave can't
     /// cover is an error that says why, instead of a switch that is on but saves nothing (#196).
-    /// Turning it on for a file only opened here is the go-ahead a save gives (#3307).
+    /// Turning it on for a file only opened here is the go-ahead a save gives (#3307), when the
+    /// document was read from that file.
     pub(super) fn set_autosave(&mut self, params: &Value) -> Result<Value, String> {
         let on = match params.get("value") {
             None => !self.autosaves(),
@@ -396,7 +397,7 @@ impl WordApp {
             Some(_) => return Err("`value` must be true or false".into()),
         };
         if on && let Some(block) = self.autosave_block() {
-            if block != AutoSaveBlock::NotSavedHere {
+            if block != AutoSaveBlock::NotSavedHere || self.read_from != self.session.path {
                 return Err(block.reason());
             }
             self.autosave_path = self.session.path.clone();
