@@ -669,6 +669,11 @@ fn walk<'a>(ctx: &WalkCtx<'a>, cp_start: u32, cp_end: u32, pics: &mut media::Pic
         }
         cp = cp.saturating_add(units);
     }
+    // A table of contents still open when the story ends (a cut-off file) is closed here, so its
+    // `FieldStart` doesn't reach a save without its end.
+    for _ in fields.iter().filter(|f| f.range) {
+        push_field_end(&mut pb);
+    }
     if !pb.text.is_empty() {
         let done = pb;
         out.push(ParaOut {

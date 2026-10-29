@@ -1591,6 +1591,22 @@ fn an_empty_toc_field_is_a_whole_range_field() {
     assert!(matches!(p0.objects.as_slice(), [InlineObject::FieldStart { .. }, InlineObject::FieldEnd]), "{:?}", p0.objects);
 }
 
+/// A table of contents still open when the story ends gets its end there: a `FieldStart` without
+/// one would be saved as a field begin with no end.
+#[test]
+fn a_toc_left_open_at_the_story_end_is_closed() {
+    use wordcraft_doc::para::InlineObject;
+    for (text, pairs) in [("\u{13}TOC \\o\u{14}Intro\rMethod\r", 1), ("\u{13}TOC\u{14}\u{13}TOC\u{14}x\r", 2)] {
+        let spec = structured_spec(text, text.chars().count() as u32);
+        let doc = read(&struct_doc(&spec)).expect("opens");
+        let objs: Vec<&InlineObject> = doc.body.iter().filter_map(|b| b.as_para()).flat_map(|p| &p.objects).collect();
+        let starts = objs.iter().filter(|o| matches!(o, InlineObject::FieldStart { .. })).count();
+        let ends = objs.iter().filter(|o| matches!(o, InlineObject::FieldEnd)).count();
+        assert_eq!((starts, ends), (pairs, pairs), "{text:?}: {objs:?}");
+        assert!(matches!(objs.last(), Some(InlineObject::FieldEnd)), "{text:?}: the end comes last");
+    }
+}
+
 /// A field inside another field's result shows its result there, not its code.
 #[test]
 fn a_field_in_a_result_adds_its_result_not_its_code() {
