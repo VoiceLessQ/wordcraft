@@ -452,7 +452,8 @@ pub(crate) fn stylesheet(raw: &[crate::stsh::RawStyle], ids: &[String], fonts: &
             }
         }
         let name = builtin.map_or_else(|| display_name(&st.name), |b| b.1);
-        sheet.styles.push(Style { id, name, kind, based_on: base, chr, para, ..Default::default() });
+        // Word's own styles (`sti` below istiUser) are built in, as the DOCX reader marks them.
+        sheet.styles.push(Style { id, name, kind, based_on: base, chr, para, builtin: st.sti < crate::stsh::STI_USER, ..Default::default() });
     }
     sheet
 }
