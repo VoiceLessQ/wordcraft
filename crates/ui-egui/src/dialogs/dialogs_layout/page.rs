@@ -1,4 +1,4 @@
-use super::*;
+use super::{MeasureExt, Serialize, Ui, Value, WordApp, buttons, fit_size, heading, json, run, semibold, unit, vec2};
 
 // ---------------------------------------------------------------------------------------------
 // Size
