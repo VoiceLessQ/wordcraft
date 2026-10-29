@@ -1141,6 +1141,20 @@ fn a_code_paragraph_round_trips_without_a_direct_code_font() {
     assert_eq!((f.size, f.bold, f.code, f.font.as_deref()), (None, false, false, None), "{rtf}");
 }
 
+/// Escaped semicolons in a font name stop at the limit, as other characters do (review of #3862).
+#[test]
+fn escaped_semicolons_in_a_font_name_stop_at_the_limit() {
+    let mut r = reader::Reader::default();
+    r.st.dest = state::Dest::FontTbl;
+    for _ in 0..100_000 {
+        r.ch(';');
+    }
+    assert_eq!(r.font_name.len(), model::MAX_FONT_NAME + 1);
+    let rtf = format!(r"{{\rtf1{{\fonttbl{{\f0 {};}}}}\f0 x\par}}", r"\'3b".repeat(model::MAX_FONT_NAME + 1));
+    let runs = text_runs(rtf.as_bytes());
+    assert_eq!(run_fmt(&runs, "x").font, None);
+}
+
 #[test]
 fn a_semicolon_in_a_font_name_round_trips() {
     // `;` ends a `\fonttbl` entry, so it is written `\'3b` and read back as part of the name (#3740).

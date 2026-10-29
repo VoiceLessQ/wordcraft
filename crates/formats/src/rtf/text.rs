@@ -288,7 +288,10 @@ impl Reader {
         self.finish_multibyte();
         // Only a literal `;` ends a font name: an escaped one (`\'3b`, `\u59?`) belongs to it.
         if c == ';' && self.st.dest == Dest::FontTbl {
-            self.font_name.push(c);
+            // Held to the limit as other characters are; one past it drops the name.
+            if self.font_name.len() <= model::MAX_FONT_NAME {
+                self.font_name.push(c);
+            }
             return;
         }
         let mut buf = [0u8; 4];
