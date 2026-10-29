@@ -247,12 +247,12 @@ pub fn read_with_password(bytes: &[u8], password: Option<&str>) -> Result<Docume
         doc.core = core;
     }
     doc.body.clear();
-    doc.styles = fmt::stylesheet(&raw_styles, &fonts);
+    let style_ids = fmt::style_ids(&raw_styles);
+    doc.styles = fmt::stylesheet(&raw_styles, &style_ids, &fonts);
     // Word's built-in styles (`sti` below istiUser) are built in here too, and with no quick
     // flag read the Home › Styles gallery shows Word's usual set, as the DOCX reader does.
-    for raw in raw_styles.iter().filter(|r| !r.name.is_empty() && r.sti < stsh::STI_USER) {
-        let id = fmt::raw_style_id(raw);
-        if let Some(st) = doc.styles.styles.iter_mut().find(|s| s.id == id) {
+    for (_, id) in raw_styles.iter().zip(&style_ids).filter(|(r, _)| !r.name.is_empty() && r.sti < stsh::STI_USER) {
+        if let Some(st) = doc.styles.styles.iter_mut().find(|s| s.id == *id) {
             st.builtin = true;
         }
     }
@@ -286,7 +286,7 @@ pub fn read_with_password(bytes: &[u8], password: Option<&str>) -> Result<Docume
         chpx_bins: &chpx_bins,
         papx_bins: &papx_bins,
         fonts: &fonts,
-        raw_styles: &raw_styles,
+        style_ids: &style_ids,
         sheet: &sheet,
         notes: &[],
         own_note: None,
@@ -432,7 +432,7 @@ struct WalkCtx<'a> {
     chpx_bins: &'a Bins,
     papx_bins: &'a Bins,
     fonts: &'a [String],
-    raw_styles: &'a [stsh::RawStyle],
+    style_ids: &'a [String],
     sheet: &'a StyleSheet,
     /// (reference CP in the main document, kind, part id) for notes.
     notes: &'a [(u32, NoteKind, u32)],
@@ -548,8 +548,8 @@ fn walk<'a>(ctx: &WalkCtx<'a>, cp_start: u32, cp_end: u32, pics: &mut media::Pic
                 // querying at the mark's own FC finds that paragraph's properties.
                 let fc_mark = ctx.pieces.fc_of_cp(cp).unwrap_or(0);
                 let (istd, papx) = ctx.papx_bins.papx(ctx.word, fc_mark);
-                if let Some(st) = ctx.raw_styles.get(istd as usize).filter(|s| !s.name.is_empty()) {
-                    pb.props.style = Some(fmt::raw_style_id(st));
+                if let Some(id) = ctx.style_ids.get(istd as usize).filter(|id| !id.is_empty()) {
+                    pb.props.style = Some(id.clone());
                 }
                 let mut row = table::decode(papx);
                 row.cell_mark = c == '\u{7}';

@@ -418,7 +418,7 @@ pub(crate) fn apply_para(p: &mut ParaProps, prl: &Prl) {
 
 /// Build the model stylesheet: resolve each raw style's chain (base → this) and the ids we
 /// reference from paragraphs.
-pub(crate) fn stylesheet(raw: &[crate::stsh::RawStyle], fonts: &[String]) -> StyleSheet {
+pub(crate) fn stylesheet(raw: &[crate::stsh::RawStyle], ids: &[String], fonts: &[String]) -> StyleSheet {
     let mut sheet = StyleSheet::empty();
     // Word's base character properties: font index 0 of the table, 10 pt ([MS-DOC] sprmCHps).
     sheet.default_chr.font = fonts.first().cloned();
@@ -430,14 +430,14 @@ pub(crate) fn stylesheet(raw: &[crate::stsh::RawStyle], fonts: &[String]) -> Sty
             continue;
         }
         let builtin = builtin_by_sti(st.sti);
-        let id = raw_style_id(st);
+        let id = ids.get(istd).cloned().unwrap_or_default();
         let kind = match st.stk {
             2 => StyleKind::Character,
             3 => StyleKind::Table,
             4 => StyleKind::Numbering,
             _ => StyleKind::Paragraph,
         };
-        let base = base_of(raw, istd).and_then(|i| raw.get(i)).map(raw_style_id);
+        let base = base_of(raw, istd).and_then(|i| ids.get(i)).cloned();
         // Inherit: properties come from the base chain, root first, then our own grpprls.
         let mut chr = CharProps::default();
         let mut para = ParaProps::default();
@@ -497,8 +497,34 @@ fn builtin_by_sti(sti: u16) -> Option<(String, String, u8)> {
 }
 
 /// A stored style's id: by its built-in index when it has one, else by its name.
-pub(crate) fn raw_style_id(raw: &crate::stsh::RawStyle) -> String {
+fn raw_style_id(raw: &crate::stsh::RawStyle) -> String {
     builtin_by_sti(raw.sti).map_or_else(|| style_id(&raw.name), |b| b.0)
+}
+
+/// Each stored style's id by `istd` (empty without a name). Word's own styles take theirs first;
+/// one already taken gets a number: "Heading 1" next to "Überschrift 1" is `Heading1_2`.
+pub(crate) fn style_ids(raw: &[crate::stsh::RawStyle]) -> Vec<String> {
+    let mut ids = vec![String::new(); raw.len()];
+    let mut taken = std::collections::BTreeSet::new();
+    // The next number to try for each id, so many styles of one name stay linear.
+    let mut next: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let named = |i: &usize, word: bool| raw.get(*i).is_some_and(|s| !s.name.is_empty() && (s.sti < crate::stsh::STI_USER) == word);
+    let order = (0..raw.len()).filter(|i| named(i, true)).chain((0..raw.len()).filter(|i| named(i, false)));
+    for i in order {
+        let Some(st) = raw.get(i) else { continue };
+        let base = raw_style_id(st);
+        let mut id = base.clone();
+        while taken.contains(&id) {
+            let n = next.entry(base.clone()).or_insert(2);
+            id = format!("{base}_{n}");
+            *n += 1;
+        }
+        taken.insert(id.clone());
+        if let Some(slot) = ids.get_mut(i) {
+            *slot = id;
+        }
+    }
+    ids
 }
 
 /// The style-id form of a stored (lower-case) built-in name, matching the docx reader's ids.

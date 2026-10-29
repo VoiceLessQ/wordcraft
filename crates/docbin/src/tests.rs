@@ -809,6 +809,36 @@ fn localized_built_in_styles_take_words_ids() {
     assert_eq!(styles, [Some("Heading1"), Some("TOC1")]);
 }
 
+/// A user style named like a built-in one gets its own id: "Heading 1" in a German document
+/// took `Heading1` from "Überschrift 1", so both paragraphs showed one style (review of #4484).
+#[test]
+fn user_styles_named_like_built_in_ones_keep_their_own_id() {
+    let spec = RichSpec {
+        text: "a\rb\rc\r",
+        styles: vec![
+            (1, 0x0FFF, "Standard", Vec::new(), Vec::new()),
+            (1, 0, "\u{DC}berschrift 1", Vec::new(), Vec::new()),
+            (1, 0, "Heading 1", Vec::new(), Vec::new()),
+            (1, 2, "Eigene", Vec::new(), Vec::new()),
+        ],
+        fonts: vec!["Times New Roman"],
+        chpx_runs: vec![(0, Vec::new())],
+        papx_entries: vec![(0, 1, Vec::new()), (2, 2, Vec::new()), (4, 3, Vec::new())],
+    };
+    let extra = RichExtra { style_sti: vec![0, 1, 0x0FFE, 0x0FFE], ..Default::default() };
+    let doc = read(&rich_doc_with(&spec, &extra)).expect("opens");
+    let own: Vec<(&str, Option<&str>, bool)> = doc.styles.styles.iter().take(4).map(|s| (s.id.as_str(), s.based_on.as_deref(), s.builtin)).collect();
+    assert_eq!(
+        own,
+        [("Normal", None, true), ("Heading1", Some("Normal"), true), ("Heading1_2", Some("Normal"), false), ("Eigene", Some("Heading1_2"), false)]
+    );
+    let styles: Vec<Option<&str>> = doc.body.iter().filter_map(|b| b.as_para()).map(|p| p.props.style.as_deref()).collect();
+    assert_eq!(styles, [Some("Heading1"), Some("Heading1_2"), Some("Eigene")]);
+    let mut ids: Vec<&str> = doc.styles.styles.iter().map(|s| s.id.as_str()).collect();
+    ids.sort_unstable();
+    assert!(ids.windows(2).all(|w| w.first() != w.get(1)), "{ids:?}");
+}
+
 /// #534: Chinese theses set a first-line indent of two characters (`sprmPDxaLeft1`, whose operand
 /// is two bytes, plus `sprmPDxcLeft1` in hundredths of a character), and exact line spacing as a
 /// negative LSPD `dyaLine`. Both were lost: the indent read as four bytes, and exact 20pt as
