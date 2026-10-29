@@ -15,7 +15,7 @@ agent control. This page is the summary; the assessment is
 
 > **Comment command update:** 2026-10-14 · malformed explicit IDs rejected; synthetic refusal, undo/redo and DOCX save/reopen checks (#1690 finding 3). Readiness estimates unchanged.
 
-## Headline numbers (estimates 2026-10-10, measurements 2026-10-25)
+## Headline numbers (estimates 2026-10-10, measurements 2026-10-29)
 
 | Number | Value | Kind |
 | --- | --- | --- |
