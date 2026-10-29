@@ -4002,9 +4002,33 @@ fn failed_command_leaves_document_unchanged() {
 
 /// Runs a command on junk; `Session::run` turns a panic into an error, which fails the test.
 fn run_junk(s: &mut Session, id: &str, params: &serde_json::Value) {
-    if let Err(crate::CmdError::Failed(m)) = s.run(id, params) {
-        assert!(!m.starts_with(&format!("{id} panicked: ")), "{m}");
-    }
+    let r = s.run(id, params);
+    assert!(!caught_panic(&s.registry, &r), "{r:?}");
+}
+
+/// A panic that `Session::run`'s guard turned into an error, in a command or one it ran: the
+/// guard's own `"{id} panicked: "` counts, not an error that echoes those words.
+fn caught_panic(reg: &crate::Registry, r: &Result<serde_json::Value, crate::CmdError>) -> bool {
+    matches!(r, Err(crate::CmdError::Failed(m)) if m.split_once(" panicked: ").is_some_and(|(id, _)| reg.get(id).is_some()))
+}
+
+/// Outline's commands run Paragraph ones, so the inner command's name is in the error (review
+/// of #4207: the fuzz only looked for the outer one's).
+#[test]
+fn caught_panic_counts_a_panic_in_a_command_another_ran() {
+    let mut s = Session::new(crate::sample::sample_document());
+    let boom = crate::CommandSpec::new("test.boom", "Boom", "", |_, _| panic!("boom")).pure();
+    let outer = crate::CommandSpec::new("test.outer", "Outer", "", |s, v| s.run("test.boom", v)).pure();
+    s.registry = std::sync::Arc::new(crate::Registry::new(vec![boom, outer]));
+    let nested = s.run("test.outer", &json!({}));
+    assert!(matches!(&nested, Err(crate::CmdError::Failed(m)) if m.starts_with("test.boom panicked: ")), "{nested:?}");
+    assert!(caught_panic(&s.registry, &nested));
+    assert!(!caught_panic(&s.registry, &Err(crate::CmdError::Failed("no picture".into()))));
+    // A command's own error can quote what it was given.
+    let mut full = Session::new(crate::sample::sample_document());
+    let echoed = full.run("developer.control", &json!({"control": "x panicked: y"}));
+    assert!(matches!(&echoed, Err(crate::CmdError::Failed(m)) if m.contains(" panicked: ")), "{echoed:?}");
+    assert!(!caught_panic(&full.registry, &echoed), "{echoed:?}");
 }
 
 /// Review of #3692: the line cap on typed paragraphs is the engine's, so a control-channel or
