@@ -338,8 +338,10 @@ impl WordApp {
         }
         // A file read from disk may have AutoSave turned on for it; one opened from bytes only
         // names a file it never read.
-        if id == "file.open" && params.get("path").is_some() && v.get("alreadyOpen").and_then(Value::as_bool) != Some(true) {
-            self.read_from = if params.get("data").is_some() { None } else { self.session.path.clone() };
+        // `file.open` without a path only asks for the picker, and `data` that isn't a string is
+        // ignored (the file is read from disk).
+        if id == "file.open" && params.get("path").and_then(Value::as_str).is_some() && v.get("alreadyOpen").and_then(Value::as_bool) == Some(false) {
+            self.read_from = if params.get("data").and_then(Value::as_str).is_some() { None } else { self.session.path.clone() };
         }
     }
 

@@ -4801,6 +4801,14 @@ fn the_autosave_switch_refuses_a_document_opened_from_bytes() {
     b.autosave_tick(now_ms() + 10_000.0);
     assert!(b.session.dirty);
     assert_eq!(std::fs::read(&path).unwrap(), on_disk, "the named file is untouched");
+    // Open without a path only asks for the picker: it isn't a read of the shown file.
+    b.services.pick_open = Some(Box::new(|_| None));
+    b.run("file.open", json!({"path": null})).unwrap();
+    assert!(b.run("file.autosave", json!({"value": true})).is_err(), "the picker request grants nothing");
+    // A `data` that isn't a string is ignored and the file is read from disk.
+    let mut c = app();
+    c.run("file.open", json!({"path": path.to_string_lossy(), "data": null})).unwrap();
+    assert!(c.run("file.autosave", json!({"value": true})).is_ok(), "read from disk");
     // Saving is still the way: then AutoSave covers the file.
     b.run("file.save", json!({})).unwrap();
     assert!(b.autosaves());
