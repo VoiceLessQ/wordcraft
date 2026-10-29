@@ -4094,30 +4094,38 @@ fn hostile_params_never_panic() {
             let mut s = Session::new(crate::sample::sample_document());
             assert_ne!(s.read_aloud.backend, crate::speech::Backend::System, "tests must never start real speech");
             let r = s.run(spec.id, j);
-            assert!(!caught_panic(spec.id, &r), "{} panicked on {j}: {r:?}", spec.id);
+            assert!(!caught_panic(&reg, &r), "{} panicked on {j}: {r:?}", spec.id);
             s.clamp_selection();
             let _ = s.layout();
         }
     }
 }
 
-/// A panic in command `id` that `Session::run`'s guard turned into an error: still a crash path
-/// (#3718). Only the guard's own `"{id} panicked: "` counts, not an error that echoes those words.
-fn caught_panic(id: &str, r: &Result<serde_json::Value, crate::CmdError>) -> bool {
-    matches!(r, Err(crate::CmdError::Failed(m)) if m.strip_prefix(id).is_some_and(|rest| rest.starts_with(" panicked: ")))
+/// A panic that `Session::run`'s guard turned into an error, in a command or one it ran: still a
+/// crash path (#3718). Only the guard's own `"{id} panicked: "` counts, not an error that echoes
+/// those words.
+fn caught_panic(reg: &crate::Registry, r: &Result<serde_json::Value, crate::CmdError>) -> bool {
+    matches!(r, Err(crate::CmdError::Failed(m)) if m.split_once(" panicked: ").is_some_and(|(id, _)| reg.get(id).is_some()))
 }
 
 #[test]
 fn caught_panic_flags_a_command_that_panics() {
     let mut s = Session::new(crate::sample::sample_document());
     let boom = crate::CommandSpec::new("test.boom", "Boom", "", |_, _| panic!("boom")).pure();
-    s.registry = std::sync::Arc::new(crate::Registry::new(vec![boom]));
-    assert!(caught_panic("test.boom", &s.run("test.boom", &json!({}))));
-    assert!(!caught_panic("test.boom", &Err(crate::CmdError::Failed("no picture".into()))));
+    // Outline's commands run Paragraph ones: the inner command's name is in the error (review of #4207).
+    let outer = crate::CommandSpec::new("test.outer", "Outer", "", |s, v| s.run("test.boom", v)).pure();
+    s.registry = std::sync::Arc::new(crate::Registry::new(vec![boom, outer]));
+    let boom = s.run("test.boom", &json!({}));
+    assert!(caught_panic(&s.registry, &boom));
+    let nested = s.run("test.outer", &json!({}));
+    assert!(matches!(&nested, Err(crate::CmdError::Failed(m)) if m.starts_with("test.boom panicked: ")), "{nested:?}");
+    assert!(caught_panic(&s.registry, &nested));
+    assert!(!caught_panic(&s.registry, &Err(crate::CmdError::Failed("no picture".into()))));
     // A command's own error can quote what it was given.
-    let echoed = Session::new(crate::sample::sample_document()).run("developer.control", &json!({"control": "x panicked: y"}));
+    let mut full = Session::new(crate::sample::sample_document());
+    let echoed = full.run("developer.control", &json!({"control": "x panicked: y"}));
     assert!(matches!(&echoed, Err(crate::CmdError::Failed(m)) if m.contains(" panicked: ")), "{echoed:?}");
-    assert!(!caught_panic("developer.control", &echoed), "{echoed:?}");
+    assert!(!caught_panic(&full.registry, &echoed), "{echoed:?}");
 }
 
 #[test]
