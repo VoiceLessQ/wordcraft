@@ -1558,7 +1558,7 @@ fn hyperlink_field_targets() {
     assert_eq!(hyperlink(r#"HYPERLINK "http://example.com" \l "heading""#), Some("http://example.com#heading".into()));
     assert_eq!(hyperlink(r#"HYPERLINK \l "heading""#), Some("#heading".into()));
     assert_eq!(hyperlink(r#"Hyperlink "http://example.com""#), Some("http://example.com".into()));
-    assert_eq!(hyperlink(r#"HYPERLINK "http://example.com/path\latest""#), Some("http://example.com/path\\latest".into()));
+    assert_eq!(hyperlink(r#"HYPERLINK "http://example.com/path\latest""#), Some("http://example.com/pathlatest".into()));
     assert_eq!(hyperlink(r#"HYPERLINK "http://example.com" \o "Help text""#), Some("http://example.com".into()));
     // A tooltip or frame before the address, a longer field name, escapes and the writer's `%22`.
     assert_eq!(hyperlink(r#"HYPERLINK \o "tip" \t "_blank" "http://example.com""#), Some("http://example.com".into()));

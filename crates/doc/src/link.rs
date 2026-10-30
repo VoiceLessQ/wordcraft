@@ -71,16 +71,16 @@ pub fn hyperlink_target(instr: &str) -> Option<String> {
     let url = url.map(str::trim).filter(|u| !u.is_empty());
     let anchor = anchor.map(|a| a.trim().trim_start_matches('#')).filter(|a| !a.is_empty());
     match (url, anchor) {
-        // A fragment the address already has wins over `\l`.
-        (Some(u), Some(a)) if !u.contains('#') => Some(format!("{u}#{a}")),
-        (Some(u), _) => Some(u.to_string()),
+        // `\l` replaces a fragment the address already has, as in Word.
+        (Some(u), Some(a)) => Some(format!("{}#{a}", u.split_once('#').map_or(u, |(base, _)| base))),
+        (Some(u), None) => Some(u.to_string()),
         (None, Some(a)) => Some(format!("#{a}")),
         (None, None) => None,
     }
 }
 
 /// A field code's words: the field's name, its switches and its arguments, each with whether
-/// it was quoted. In quotes, `\"` is a quote and `\\` a backslash.
+/// it was quoted. In quotes a backslash escapes the next character, as in Word.
 fn field_args(instr: &str) -> Vec<(String, bool)> {
     let mut out = Vec::new();
     let mut chars = instr.chars().peekable();
@@ -93,7 +93,7 @@ fn field_args(instr: &str) -> Vec<(String, bool)> {
             while let Some(c) = chars.next() {
                 match c {
                     '"' => break,
-                    '\\' if matches!(chars.peek(), Some('"' | '\\')) => word.extend(chars.next()),
+                    '\\' => word.extend(chars.next()),
                     _ => word.push(c),
                 }
             }
@@ -124,7 +124,7 @@ mod tests {
             ("HYPERLINK https://example.org/b", Some("https://example.org/b")),
             ("HYPERLINK\t\"http://example.com\"", Some("http://example.com")),
             (r#"HYPERLINK"http://example.com""#, Some("http://example.com")),
-            (r#"HYPERLINK "http://example.com/path\latest""#, Some(r"http://example.com/path\latest")),
+            (r#"HYPERLINK "http://example.com/path\latest""#, Some("http://example.com/pathlatest")),
             (r#"HYPERLINK "C:\\Docs\\My file.docx""#, Some(r"C:\Docs\My file.docx")),
             (r#"HYPERLINK "say \"hi\"""#, Some(r#"say "hi""#)),
             (r#"HYPERLINK " http://example.com ""#, Some("http://example.com")),
@@ -139,7 +139,7 @@ mod tests {
             (r#"HYPERLINK \l "bm" \l"#, Some("#bm")),
             // A bookmark's own `#`, an address that has a fragment, and an empty address.
             (r##"HYPERLINK "http://example.com" \l "#top""##, Some("http://example.com#top")),
-            (r#"HYPERLINK "http://example.com/#a" \l "b""#, Some("http://example.com/#a")),
+            (r#"HYPERLINK "http://example.com/#a" \l "b""#, Some("http://example.com/#b")),
             (r#"HYPERLINK "" \l "x""#, Some("#x")),
             // No target, or not a `HYPERLINK` field.
             ("HYPERLINK", None),
