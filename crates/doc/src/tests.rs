@@ -732,6 +732,39 @@ fn trimmed_nesting_counts_every_shape_of_a_shared_story() {
     assert!(t.elapsed().as_secs_f32() < 10.0, "{:?}", t.elapsed());
 }
 
+/// A fragment without its stories copies this document's, so the limit counts them (review of #4697).
+#[test]
+fn pasted_box_counts_the_story_it_copies_from_this_document() {
+    let shape = |story| InlineObject::Shape {
+        kind: para::ShapeKind::TextBox,
+        w: 144.0,
+        h: 72.0,
+        fill: None,
+        stroke: None,
+        stroke_width: 0.75,
+        float: Default::default(),
+        story: Some(story),
+        freeform: None,
+        effects: Default::default(),
+        extra: Default::default(),
+    };
+    let nested = |n: usize, mid: Vec<InlineObject>| {
+        let mut all: Vec<InlineObject> = (0..n).map(|_| InlineObject::ControlStart { control: Box::default() }).collect();
+        all.extend(mid);
+        all.extend((0..n).map(|_| InlineObject::ControlEnd));
+        para_of_objects(all)
+    };
+    let mut d = Document::new();
+    let inner = d.add_part(PartKind::TextBox, vec![Arc::new(Block::Para(nested(10, Vec::new())))]);
+    let story = d.add_part(PartKind::TextBox, vec![Arc::new(Block::Para(nested(20, vec![shape(inner)])))]);
+    d.body = vec![Arc::new(Block::Para(nested(50, Vec::new())))];
+    let at = Pos { story: StoryRef::Body, path: Path::top(0), off: 50 * para::OBJ.len_utf8() };
+    let frag = edit::Fragment { blocks: vec![Block::Para(para_of_objects(vec![shape(story)]))], parts: Default::default() };
+    d.insert_fragment(&at, &frag).unwrap();
+    // 50 around the box leave its two stories 14 of their 30 (80 before).
+    assert_eq!(control::nesting_peak(&d.body, &d.parts), control::MAX_CONTROL_NESTING);
+}
+
 #[test]
 fn lone_table_open_markers_linear_time() {
     let mut d = Document::new();
