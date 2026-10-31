@@ -133,6 +133,7 @@ pub(super) fn find_in_navigation_pane(app: &mut WordApp, ctx: &egui::Context, te
     app.ui.nav_tab = "results".into();
     let _ = app.run("view.navigationPane", json!({"value": true}));
     let _ = app.run("edit.find", json!({"text": text}));
+    crate::mini_toolbar::put_away(app);
 }
 
 /// Whether `e` is the text of the shortcut that opened a box (see `Dialog::Commands::swallow`):
