@@ -1813,6 +1813,26 @@ fn resized_model_3d_resizes_its_fallback_too() {
     }
     let body = text(&unzip(&wordcraft_docx::write(&d).unwrap()), "word/document.xml");
     assert_eq!(attr_values(&body, "wp:extent", "cx"), ["3657600", "3657600"], "{body}");
+    assert_eq!(attr_values(&body, "wp:extent", "cy"), ["1828800", "1828800"], "{body}");
+}
+
+#[test]
+fn model_3d_keeps_the_crop_of_its_picture() {
+    let mut files = unzip(&model3d_docx(true));
+    let blip = r#"<a:blip r:embed="rIdPic"/>"#;
+    let doc = text(&files, "word/document.xml").replacen(blip, &format!(r#"{blip}<a:srcRect l="10000" r="20000"/>"#), 1);
+    files.insert("word/document.xml".into(), doc.into_bytes());
+    let entries: Vec<_> = files.iter().map(|(name, bytes)| (name.as_str(), bytes.as_slice())).collect();
+    let d = wordcraft_docx::read(&zip(&entries)).unwrap();
+    let g = graphics(&d);
+    let [InlineObject::Graphic { graphic, .. }] = g.as_slice() else { panic!("{g:?}") };
+    let crop = graphic.items.iter().find_map(|i| match i {
+        wordcraft_doc::graphic::GraphicItem::Image { crop, .. } => Some(*crop),
+        _ => None,
+    });
+    assert_eq!(crop, Some([0.1, 0.0, 0.2, 0.0]));
+    let body = text(&unzip(&wordcraft_docx::write(&d).unwrap()), "word/document.xml");
+    assert_eq!(attr_values(&body, "a:srcRect", "r"), ["20000"], "{body}");
 }
 
 #[test]
@@ -1834,12 +1854,18 @@ fn model_3d_after_a_choice_it_cant_keep_is_still_kept() {
 
 #[test]
 fn model_3d_without_its_model_part_opens_as_its_picture() {
-    let d = wordcraft_docx::read(&model3d_docx(false)).unwrap();
-    let objects: Vec<InlineObject> = paras(&d).iter().flat_map(|p| p.objects.iter()).cloned().collect();
-    let [InlineObject::Image { media, .. }] = objects.as_slice() else { panic!("{objects:?}") };
-    assert!(d.media.contains_key(media));
-    let body = text(&unzip(&wordcraft_docx::write(&d).unwrap()), "word/document.xml");
-    assert!(!body.contains("am3d:model3d") && !body.contains("mc:AlternateContent"), "{body}");
+    // No relationship to the model, then a relationship to a part the package doesn't hold.
+    let mut files = unzip(&model3d_docx(true));
+    files.remove("word/media/model3d1.glb");
+    let entries: Vec<_> = files.iter().map(|(name, bytes)| (name.as_str(), bytes.as_slice())).collect();
+    for package in [model3d_docx(false), zip(&entries)] {
+        let d = wordcraft_docx::read(&package).unwrap();
+        let objects: Vec<InlineObject> = paras(&d).iter().flat_map(|p| p.objects.iter()).cloned().collect();
+        let [InlineObject::Image { media, .. }] = objects.as_slice() else { panic!("{objects:?}") };
+        assert!(d.media.contains_key(media));
+        let body = text(&unzip(&wordcraft_docx::write(&d).unwrap()), "word/document.xml");
+        assert!(!body.contains("am3d:model3d") && !body.contains("mc:AlternateContent"), "{body}");
+    }
 }
 
 #[test]

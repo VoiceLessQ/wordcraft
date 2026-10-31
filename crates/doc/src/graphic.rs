@@ -120,8 +120,13 @@ pub enum GraphicItem {
         #[serde(default)]
         font: Option<String>,
     },
-    /// A picture (`Document::media` key) stretched into `rect`.
-    Image { rect: [f32; 4], media: String },
+    /// A picture (`Document::media` key) stretched into `rect`, with `crop` as an inline picture's.
+    Image {
+        rect: [f32; 4],
+        media: String,
+        #[serde(default)]
+        crop: [f32; 4],
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

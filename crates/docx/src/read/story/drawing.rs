@@ -49,7 +49,7 @@ impl Reader<'_> {
             }
             // The renderer's existing missing-picture box marks ink without a usable preview.
             // InkML stays opaque: no approximation of its strokes or conversion to freeforms.
-            let items = vec![GraphicItem::Image { rect: [0.0, 0.0, w, h], media: String::new() }];
+            let items = vec![GraphicItem::Image { rect: [0.0, 0.0, w, h], media: String::new(), crop: [0.0; 4] }];
             let graphic = Arc::new(Graphic { kind: GraphicKind::Ink, items, w, h, source: Some(source), ..Default::default() });
             return Some(InlineObject::Graphic { w, h, alt, float, graphic });
         }
@@ -132,7 +132,7 @@ impl Reader<'_> {
         if let InlineObject::Graphic { w, h, graphic, .. } = &mut object {
             let graphic = Arc::make_mut(graphic);
             if let Some(InlineObject::Image { media, .. }) = preview {
-                graphic.items = vec![GraphicItem::Image { rect: [0.0, 0.0, *w, *h], media }];
+                graphic.items = vec![GraphicItem::Image { rect: [0.0, 0.0, *w, *h], media, crop: [0.0; 4] }];
             }
             if let Some(fallback) = fallback {
                 let kept =
@@ -169,10 +169,10 @@ impl Reader<'_> {
         let fallback = ac.child("mc:Fallback")?;
         let kept = El { name: "mc:AlternateContent".into(), attrs: Vec::new(), kids: vec![Node::El(choice.clone()), Node::El(fallback.clone())] };
         let source = self.keep_embedded(&kept, rels, &[])?;
-        let Some(InlineObject::Image { media, w, h, alt, float, .. }) = self.read_drawing(sc, fallback.child("w:drawing")?, rels) else {
+        let Some(InlineObject::Image { media, w, h, alt, float, crop, .. }) = self.read_drawing(sc, fallback.child("w:drawing")?, rels) else {
             return None;
         };
-        let items = vec![GraphicItem::Image { rect: [0.0, 0.0, w, h], media }];
+        let items = vec![GraphicItem::Image { rect: [0.0, 0.0, w, h], media, crop }];
         let graphic = Arc::new(Graphic { kind, items, w, h, source: Some(source), ..Default::default() });
         Some(InlineObject::Graphic { w, h, alt, float, graphic })
     }
@@ -397,7 +397,7 @@ impl Reader<'_> {
                 let mut float = float;
                 float.set_spin(xfrm_spin(e.child("w14:xfrm")));
                 // As drawing-level ink: its fallback picture, else the missing-picture box.
-                let items = vec![GraphicItem::Image { rect: [0.0, 0.0, w, h], media: preview.unwrap_or_default() }];
+                let items = vec![GraphicItem::Image { rect: [0.0, 0.0, w, h], media: preview.unwrap_or_default(), crop: [0.0; 4] }];
                 let graphic = Arc::new(Graphic { kind: GraphicKind::Ink, items, w, h, source: Some(source), ..Default::default() });
                 Some(InlineObject::Graphic { w, h, alt: alt.clone(), float, graphic })
             } else if e.name == "pic:pic" {
