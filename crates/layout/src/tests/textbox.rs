@@ -266,7 +266,8 @@ fn a_line_stays_while_its_text_ends_inside_the_box() {
     // #5059: two lines in a box `w` × `h`, how many show and where the second's text ends.
     let two = |spacing: f32, w: f32, body: TextBody| {
         let mut d = Document::from_text("x");
-        let id = text_box(&mut d, 0, "One", w, if body.vert == TextVert::Horz { w } else { 144.0 }, body);
+        let (bw, bh) = if body.vert == TextVert::Horz { (144.0, w) } else { (w, 144.0) };
+        let id = text_box(&mut d, 0, "One", bw, bh, body);
         let para = |text: &str| {
             let mut p = Paragraph::with_text(text, Default::default());
             p.props.line_spacing = Some(LineSpacing::Multiple(spacing));
@@ -277,14 +278,15 @@ fn a_line_stays_while_its_text_ends_inside_the_box() {
         let ends = l.pages[0].items.iter().filter_map(|it| match it {
             Placed::Lines { story: StoryRef::Part(s), para, l0, y, .. } if *s == id => {
                 let (first, last) = (para.lines.get(*l0)?, para.lines.last()?);
-                Some(y + last.top - first.top + last.text_depth())
+                Some(y + last.top - first.top + last.baseline - last.top + last.text_desc)
             }
             _ => None,
         });
         let end = ends.fold(0.0f32, f32::max) - frame_of(&l, id).y;
         (lines(&l, id).iter().map(|(.., l0, l1)| l1 - l0).sum::<usize>(), end)
     };
-    for spacing in [1.0, 1.5] {
+    // Tight spacing shrinks the ascent, not the descent, so the text ends below the line box.
+    for spacing in [0.5, 1.0, 1.5] {
         let (_, end) = two(spacing, 400.0, TextBody::default());
         assert_eq!(two(spacing, end + 0.25, TextBody::default()).0, 2, "{spacing}: the text ends in the bottom margin");
         assert_eq!(two(spacing, end - 1.0, TextBody::default()).0, 1, "{spacing}: the text would run past the box");
