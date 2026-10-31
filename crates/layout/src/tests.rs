@@ -2714,12 +2714,16 @@ fn side_borders_lie_beyond_their_distance_from_the_text() {
         p.props.shading = Some(fill);
         let l = lay(&d);
         let items = &l.pages[0].items;
-        let text = items.iter().find_map(|i| if let Placed::Lines { x, .. } = i { Some(*x) } else { None }).unwrap();
+        let (text, end) = items
+            .iter()
+            .find_map(|i| if let Placed::Lines { x, para, .. } = i { para.lines.first().map(|l| (*x, *x + l.right)) } else { None })
+            .unwrap();
         let shade = items.iter().find_map(|i| if let Placed::Fill { rect, .. } = i { Some(*rect) } else { None }).unwrap();
         let rules: Vec<(f32, f32)> = items.iter().filter_map(|i| if let Placed::Rule { x0, x1, .. } = i { Some((*x0, *x1)) } else { None }).collect();
         assert_eq!(rules.len(), 3, "{rules:?}");
         let (above, left, right) = (rules[0], rules[1], rules[2]);
         assert!((left.0 + 1.5 - (text - space)).abs() < 0.01, "{left:?} {text}");
+        assert!((right.0 - 1.5 - (end + space)).abs() < 0.01, "{right:?} {end}");
         // The top line and the shading reach the outer edges, so nothing shows through the joins.
         assert!((above.0 - (left.0 - 1.5)).abs() < 0.01 && (above.1 - (right.0 + 1.5)).abs() < 0.01, "{rules:?}");
         assert!((shade.x - above.0).abs() < 0.01 && (shade.right() - above.1).abs() < 0.01, "{rules:?} {shade:?}");
