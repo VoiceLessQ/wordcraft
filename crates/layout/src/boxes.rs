@@ -508,15 +508,18 @@ pub(crate) const BOX_INSET_Y: f32 = 3.6;
 
 /// Keep what fits in a box `height` tall (items relative to its top): lines whose text doesn't fit
 /// are dropped (whole lines; one that only partly fits too) and so is anything starting below.
+/// Text, and the shading and borders cut to match it, may use the `margin` past `height`; what
+/// stays whole may not, or it would run on past the box.
 /// The first line always stays, so even a tiny box shows the start of its text.
-pub(crate) fn fit_box(items: Vec<Placed>, height: f32) -> Vec<Placed> {
-    let limit = height + 0.5;
+pub(crate) fn fit_box(items: Vec<Placed>, height: f32, margin: f32) -> Vec<Placed> {
+    let whole = height + 0.5;
+    let limit = whole + margin;
     let mut out = Vec::with_capacity(items.len());
     let mut kept_line = false;
     for it in items {
         if let Some(r) = it.turned_bounds() {
             // Turned text (in a table cell) stays whole.
-            if r.y < limit {
+            if r.y < whole {
                 out.push(it);
             }
             continue;
@@ -549,7 +552,7 @@ pub(crate) fn fit_box(items: Vec<Placed>, height: f32) -> Vec<Placed> {
             | Placed::Clip { rect, .. }
             | Placed::Cell { rect, .. }
             | Placed::Object { rect, .. }
-                if rect.y < limit =>
+                if rect.y < whole =>
             {
                 out.push(it);
             }

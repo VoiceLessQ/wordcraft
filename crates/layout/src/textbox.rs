@@ -66,15 +66,14 @@ fn frame(body: &TextBody, w: f32, h: f32) -> (f32, f32) {
     (along.max(12.0), across)
 }
 
-/// How deep a box's text may reach: to its edge, so the margin past `across` counts (#5059).
-fn room(body: &TextBody, across: f32) -> f32 {
+/// The margin past `across`: a box's text may run into it, up to the box's edge (#5059).
+fn far_margin(body: &TextBody) -> f32 {
     let [l, _, r, b] = body.insets_pt();
-    across
-        + match body.vert.turn() {
-            TextDirection::Horizontal => b,
-            TextDirection::Down => l,
-            TextDirection::Up => r,
-        }
+    match body.vert.turn() {
+        TextDirection::Horizontal => b,
+        TextDirection::Down => l,
+        TextDirection::Up => r,
+    }
 }
 
 /// The width stacked text is laid out in (a paragraph's narrowest).
@@ -122,7 +121,7 @@ pub(crate) fn box_items(ctx: &mut Ctx, id: u32, rect: Rect, depth: usize) -> Vec
             ctx.boxes.leave();
             // Text past the box's edge is hidden, as in Word; a box that resizes to fit its text
             // shows it all (#743).
-            if body.auto_fit { inner } else { fit_box(inner, room(&body, across)) }
+            if body.auto_fit { inner } else { fit_box(inner, across, far_margin(&body)) }
         }
     };
     place(items, &body, rect, across)
@@ -285,7 +284,7 @@ fn flow(ctx: &mut Ctx, chain: &[u32], depth: usize) -> Vec<Vec<Placed>> {
                 }
             },
         };
-        let (kept, next) = fit_flow(items, room(&body, across));
+        let (kept, next) = fit_flow(items, across, far_margin(&body));
         start = next.map(Some);
         out.push(kept);
     }
@@ -350,9 +349,10 @@ fn from_y(items: Vec<Placed>, top: f32) -> Vec<Placed> {
     out
 }
 
-/// What fits in `depth` (see [`fit_box`]), and where the text left over starts.
-fn fit_flow(items: Vec<Placed>, depth: f32) -> (Vec<Placed>, Option<Cut>) {
-    let limit = depth + 0.5;
+/// What fits in `across` and the `margin` past it (see [`fit_box`]), and where the text left
+/// over starts.
+fn fit_flow(items: Vec<Placed>, across: f32, margin: f32) -> (Vec<Placed>, Option<Cut>) {
+    let limit = across + margin + 0.5;
     let mut kept_line = false;
     let mut cut: Option<(f32, Cut)> = None;
     for it in &items {
@@ -373,5 +373,5 @@ fn fit_flow(items: Vec<Placed>, depth: f32) -> (Vec<Placed>, Option<Cut>) {
             kept_line = true;
         }
     }
-    (fit_box(items, depth), cut.map(|(_, c)| c))
+    (fit_box(items, across, margin), cut.map(|(_, c)| c))
 }
