@@ -1852,6 +1852,20 @@ fn model_3d_after_a_choice_it_cant_keep_is_still_kept() {
     assert_eq!(attr_values(&body, "mc:Choice", "Requires"), ["am3d"], "only the Choice that can be kept: {body}");
 }
 
+/// A reader takes the first Choice it understands, so a model behind one isn't kept in its place.
+#[test]
+fn model_3d_after_a_choice_read_as_usual_leaves_that_choice_to_be_read() {
+    let mut files = unzip(&model3d_docx(true));
+    let doc = text(&files, "word/document.xml");
+    let picture = doc.split("<mc:Fallback>").nth(1).and_then(|f| f.split("</mc:Fallback>").next()).unwrap();
+    let first = format!(r#"<mc:Choice xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" Requires="w14">{picture}</mc:Choice>"#);
+    files.insert("word/document.xml".into(), doc.replacen("<mc:AlternateContent>", &format!("<mc:AlternateContent>{first}"), 1).into_bytes());
+    let entries: Vec<_> = files.iter().map(|(name, bytes)| (name.as_str(), bytes.as_slice())).collect();
+    let d = wordcraft_docx::read(&zip(&entries)).unwrap();
+    let objects: Vec<InlineObject> = paras(&d).iter().flat_map(|p| p.objects.iter()).cloned().collect();
+    assert!(matches!(objects.as_slice(), [InlineObject::Image { .. }]), "{objects:?}");
+}
+
 #[test]
 fn model_3d_without_its_model_part_opens_as_its_picture() {
     // No relationship to the model, then a relationship to a part the package doesn't hold.

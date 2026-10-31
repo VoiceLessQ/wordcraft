@@ -1,7 +1,8 @@
 use super::{
     AltText, Anchor, Arc, Blocks, CHARTEX_URI, ConnEnd, ContentTypes, El, Embedded, Float, FloatAlign, Glow, Graphic, GraphicItem, GraphicKind,
     INK_REL, INK_URI, InlineObject, MAX_STORY_DEPTH, Node, PartKind, Reader, Rels, Rgb, Shadow, ShapeEffects, ShapeExtra, ShapeKind, StoryCtx,
-    TextWarp, Wrap, WrapText, cap_alt, children_of_choice, int, measure, on_off_attr, own_fill, preset_kind, rt, shape_paint, u32_of,
+    TextWarp, Wrap, WrapText, cap_alt, children_of_choice, choice_understood, int, measure, on_off_attr, own_fill, preset_kind, rt, shape_paint,
+    u32_of,
 };
 
 impl Reader<'_> {
@@ -152,20 +153,23 @@ impl Reader<'_> {
     /// when it can't be kept whole.
     pub(super) fn read_kept_alternate(&mut self, sc: &mut StoryCtx, ac: &El, rels: &Rels) -> Option<InlineObject> {
         // A requirement in a namespace we can't name couldn't be written back.
-        let keepable = |c: &&El| {
+        let keepable = |c: &El| {
             let requires = c.attr("Requires").unwrap_or("");
             requires.split_whitespace().next().is_some() && requires.split_whitespace().all(|p| p != "?")
         };
-        let (choice, kind) = ac.children("mc:Choice").filter(keepable).find_map(|c| {
+        let kind_of = |c: &El| {
             let gd = c.child("w:drawing").and_then(|d| d.find("a:graphicData"))?;
             if gd.attr("uri") == Some(CHARTEX_URI) {
-                Some((c, GraphicKind::Chart))
+                Some(GraphicKind::Chart)
             } else if gd.child("am3d:model3d").is_some() {
-                Some((c, GraphicKind::Model3d))
+                Some(GraphicKind::Model3d)
             } else {
                 None
             }
-        })?;
+        };
+        // The first Choice a reader would take; `children_of_choice` reads it unless it's kept.
+        let choice = ac.children("mc:Choice").find(|c| choice_understood(c) || (keepable(c) && kind_of(c).is_some()))?;
+        let kind = kind_of(choice).filter(|_| keepable(choice))?;
         let fallback = ac.child("mc:Fallback")?;
         let kept = El { name: "mc:AlternateContent".into(), attrs: Vec::new(), kids: vec![Node::El(choice.clone()), Node::El(fallback.clone())] };
         let source = self.keep_embedded(&kept, rels, &[])?;
