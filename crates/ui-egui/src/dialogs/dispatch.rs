@@ -455,10 +455,7 @@ fn find_dialog(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         if ui.button(tl!("Find Next")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             // One step per click: `edit.find` would select a match itself, and the step after it skip one.
             match app.run("edit.findNext", opts.clone()) {
-                Ok(r) => {
-                    crate::mini_toolbar::put_away(app);
-                    *message = format!("Match {} of {}", r["index"].as_u64().unwrap_or(0) + 1, r["count"]);
-                }
+                Ok(r) => *message = format!("Match {} of {}", r["index"].as_u64().unwrap_or(0) + 1, r["count"]),
                 Err(e) => *message = e,
             }
         }

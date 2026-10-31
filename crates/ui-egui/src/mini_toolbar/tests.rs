@@ -436,6 +436,20 @@ fn searching_in_the_navigation_pane_brings_up_no_bar() {
     assert!(!visible(h.state()) && bar_layer(&h).is_none(), "no bar over the match");
 }
 
+/// F3 goes to the next match with no dialog or pane involved (review of #5034).
+#[test]
+fn the_find_next_shortcut_brings_up_no_bar() {
+    let mut h = bar_over("brown fox");
+    h.state_mut().run("edit.findNext", json!({"text": "the"})).unwrap();
+    h.state_mut().run("select.text", json!({"text": "brown fox"})).unwrap();
+    steps(&mut h);
+    assert!(visible(h.state()), "a selection in the text gets the bar");
+    h.key_press(egui::Key::F3);
+    steps(&mut h);
+    assert_eq!(h.state().session.selected_text(), "the", "F3 went to the match");
+    assert!(!visible(h.state()) && bar_layer(&h).is_none(), "no bar over the match");
+}
+
 /// Find Next selects its match to show it too, so closing the dialog brings up no bar over it.
 #[test]
 fn a_find_next_match_gets_no_bar_when_the_dialog_closes() {
