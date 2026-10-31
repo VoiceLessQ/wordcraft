@@ -74,9 +74,10 @@ impl WordApp {
             return r;
         }
         let applied = applied_font(id, &params);
+        let before = self.session.sel.clone();
         let r = self.execute_user(id, params);
         // Find goes to a match to show it, by button or shortcut alike (#5017).
-        if r.is_ok() && matches!(id, "edit.find" | "edit.findNext" | "edit.findPrevious") {
+        if matches!(id, "edit.find" | "edit.findNext" | "edit.findPrevious") && self.session.sel != before {
             crate::mini_toolbar::put_away(self);
         }
         // A save error already on the status line is the reason to see; the refusal shows otherwise.

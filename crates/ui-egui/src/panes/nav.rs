@@ -23,8 +23,11 @@ pub(super) fn nav(app: &mut WordApp, ui: &mut Ui) {
         app.ui.nav_tab = "results".into();
         ui.data_mut(|d| d.insert_temp(qid, q.clone()));
         if !q.is_empty() {
+            let before = app.session.sel.clone();
             let _ = app.session.run("edit.find", &json!({"text": q}));
-            crate::mini_toolbar::put_away(app);
+            if app.session.sel != before {
+                crate::mini_toolbar::put_away(app);
+            }
         } else {
             app.session.find.results.clear();
         }

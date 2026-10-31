@@ -450,6 +450,31 @@ fn the_find_next_shortcut_brings_up_no_bar() {
     assert!(!visible(h.state()) && bar_layer(&h).is_none(), "no bar over the match");
 }
 
+/// A Find that selects nothing leaves the selection the user made its bar (review of #5034).
+#[test]
+fn a_find_that_selects_nothing_leaves_the_bar() {
+    let mut h = bar_over("brown fox");
+    for params in [json!({"text": "nowhere"}), json!({})] {
+        h.state_mut().run("edit.find", params).unwrap();
+        steps(&mut h);
+        assert_eq!(h.state().session.selected_text(), "brown fox", "Find moved nothing");
+        assert!(visible(h.state()) && bar_layer(&h).is_some(), "the bar stays");
+    }
+}
+
+/// The same for a search in the Navigation pane that finds nothing.
+#[test]
+fn a_navigation_search_with_no_match_leaves_the_bar() {
+    let mut h = bar_over("brown fox");
+    h.state_mut().session.view.nav_pane = true;
+    h.state_mut().nav_search_focus = true;
+    steps(&mut h);
+    h.event(egui::Event::Text("nowhere".into()));
+    steps(&mut h);
+    assert_eq!(h.state().session.selected_text(), "brown fox", "the search moved nothing");
+    assert!(visible(h.state()) && bar_layer(&h).is_some(), "the bar stays");
+}
+
 /// Find Next selects its match to show it too, so closing the dialog brings up no bar over it.
 #[test]
 fn a_find_next_match_gets_no_bar_when_the_dialog_closes() {
